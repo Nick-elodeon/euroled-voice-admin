@@ -268,6 +268,10 @@ def stats() -> dict:
     return {"products": n[0], "updated": n[1], "per_shop": per}
 
 
+# real order price: per-metre goods are compared by the total for their length
+EFF = "(CASE WHEN unit = 'm' AND length_m IS NOT NULL THEN price * length_m ELSE price END)"
+
+
 def search(query: str = "", category: str = "", length_m: float | None = None, length_tol: float = 0.0,
            min_length: float | None = None, max_price: float | None = None, min_ip: int | None = None,
            in_stock: bool = True, sort: str = "price", limit: int = 5, shop: str = "",
@@ -287,7 +291,7 @@ def search(query: str = "", category: str = "", length_m: float | None = None, l
         where.append("length_m >= ?")
         args.append(min_length)
     if max_price is not None:
-        where.append("price <= ?")
+        where.append(EFF + " <= ?")
         args.append(max_price)
     if min_ip is not None:
         where.append("ip >= ?")
@@ -305,7 +309,7 @@ def search(query: str = "", category: str = "", length_m: float | None = None, l
         args.append(shop)
     if in_stock:
         where.append("stock > 0")
-    order = {"price": "price ASC", "price_desc": "price DESC", "length": "length_m ASC",
+    order = {"price": EFF + " ASC", "price_desc": EFF + " DESC", "length": "length_m ASC",
              "discount": "discount DESC"}.get(sort, "price ASC")
     c = db()
     rows = c.execute(f"SELECT * FROM products WHERE {' AND '.join(where)} ORDER BY {order} LIMIT ?",

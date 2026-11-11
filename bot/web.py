@@ -334,11 +334,27 @@ def make_app(eleven, state: dict) -> web.Application:
                               in_stock=q.get("in_stock", "1") != "0", sort=q.get("sort", "price"), shop=q.get("shop", ""),
                               use=q.get("use", ""), christmas=q.get("christmas") == "1",
                               limit=min(int(q.get("limit", 5)), 10) if q.get("limit", "5").isdigit() else 5)
-        out = [{"name": x["title"], "price_eur": x["price"], "was_eur": x["price_old"], "stock": x["stock"],
-                "length_m": x["length_m"], "ip": x["ip"], "url": x["url"], "category": x["category"],
-                "shop": x["shop"], "price_unit": {"m2": "за м²", "m": "за метр", "gab": "за штуку"}.get(x["unit"], "за штуку"),
-                "total_eur": x.get("total_eur"), "size_cm": x["size_cm"],
-                "kind": x.get("kind_ru"), "use": x.get("use"), "note": x.get("note"), "warning": x.get("warning")} for x in rows]
+        area = fl("area_m2")
+        out = []
+        for x in rows:
+            u, p = x["unit"], x["price"]
+            tot = x.get("total_eur")
+            if u == "m" and tot:
+                say = f"{tot:.2f} € за всю гирлянду/ленту {x['length_m']:g} м ({p:.2f} € за метр)"
+            elif u == "m":
+                say = f"{p:.2f} € за метр; общая цена зависит от длины, уточни у клиента нужную длину и умножь"
+            elif u == "m2":
+                say = f"{p:.2f} € за м²"
+                if area:
+                    tot = round(p * area, 2)
+                    say += f"; на {area:g} м² будет {tot:.2f} € (без запаса, советуй брать +10%)"
+            else:
+                say = f"{p:.2f} € за штуку"
+            out.append({"name": x["title"], "price_to_say": say, "total_eur": tot, "was_per_unit_eur": x["price_old"],
+                        "unit": {"m2": "за м²", "m": "за метр", "gab": "за штуку"}.get(u, "за штуку"),
+                        "in_stock": x["stock"], "length_m": x["length_m"], "ip": x["ip"], "size_cm": x["size_cm"],
+                        "shop": x["shop"], "url": x["url"], "kind": x.get("kind_ru"), "use": x.get("use"),
+                        "note": x.get("note"), "warning": x.get("warning")})
         return web.json_response({"count": len(out), "products": out})
 
     app.add_routes(r)
