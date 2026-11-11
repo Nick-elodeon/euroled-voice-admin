@@ -276,7 +276,7 @@ def make_app(eleven, state: dict) -> web.Application:
         pr = catalog.PROGRESS
         if pr["running"]:
             sh = f" ({E(pr.get('shop', ''))})" if pr.get("shop") else ""
-            status = f"<div class=panel><b>Сбор идёт{sh}.</b> Страниц: {pr['pages']}, товаров: {pr['products']}, ошибок: {pr['failed']}.<p class=sub>Сейчас: {E(pr['last_url'])}</p>" + (f"<p class=sub>Последняя ошибка: {E(pr['last_error'])}</p>" if pr["last_error"] else "") + "<p class=sub>Обновите страницу через минуту.</p></div>"
+            status = f"<div class=panel><b>Сбор идёт{sh}{(': ' + pr['phase']) if pr.get('phase') else ''}.</b> Страниц: {pr['pages']}, товаров: {pr['products']}, ошибок: {pr['failed']}.<p class=sub>Сейчас: {E(pr['last_url'])}</p>" + (f"<p class=sub>Последняя ошибка: {E(pr['last_error'])}</p>" if pr["last_error"] else "") + "<p class=sub>Обновите страницу через минуту.</p></div>"
         else:
             bad = f"<div class=err>Последняя ошибка: {E(pr['last_error'])}</div>" if pr["last_error"] else ""
             status = bad + "<div class=panel><form method=post action=/catalog/crawl><button class=pri>Собрать каталог сейчас</button></form></div>"
@@ -305,8 +305,10 @@ def make_app(eleven, state: dict) -> web.Application:
                 else:
                     sub1, val1 = "за единицу", "—"
                 if u == 'm':
-                    sub2 = "целиком" if x.get('total_src') == 'site' else "целиком (не подтверждено)"
-                    val2 = f"{x['total_eur']:.2f} €" if x.get('total_eur') else "⚠ проверить"
+                    ts = x.get('total_src')
+                    sub2 = "целиком" if ts == 'site' else "целиком"
+                    val2 = (f"{x['total_eur']:.2f} €" if x.get('total_eur') else
+                            ("⚠ расходится с сайтом" if ts == 'check' else "загружается…"))
                 elif u == 'm2':
                     sub2 = f"коробка {x['pack_m2']:g} м²" if x.get('pack_m2') else "коробка"
                     val2 = f"{x['box_price_eur']:.2f} €" if x.get('box_price_eur') else "—"

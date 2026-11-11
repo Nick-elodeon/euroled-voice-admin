@@ -188,10 +188,14 @@ def parse_detail(html: str, row: dict) -> dict:
             el = blk.select_one(".card__pice-sale-value")
             m = re.search(r"\d+(?:[.,]\d+)?", (el or blk).get_text(" ", strip=True))
             total = _num(m.group(0)) if m else None
+        if total is None:
+            m = re.search(r'card__pice-sale-value[^>]*>\s*(\d+(?:[.,]\d+)?)', html)
+            total = _num(m.group(1)) if m else None
         calc = row["price"] * row["length_m"]
         if total is not None and abs(total - calc) <= max(0.5, 0.03 * calc):
             out.update(total=round(total, 2), total_src="site")
         else:  # the site disagrees with the title: never guess
+            log.warning("total check: %s site=%s calc=%.2f", row.get("url"), total, calc)
             out.update(total=None, total_src="check")
     elif row["unit"] == "m2":
         el = soup.select_one("#piecesCart")
@@ -391,10 +395,16 @@ def search(query: str = "", category: str = "", length_m: float | None = None, l
              "discount": "discount DESC"}.get(sort, "price ASC")
     c = db()
     rows = c.execute(f"SELECT * FROM products WHERE {' AND '.join(where)} ORDER BY {order} LIMIT ?",
-                     args + [limit]).fetchall()
+                     args + [limit * 4]).fetchall()
     c.close()
-    out = []
+    out, seen = [], set()
     for r in rows:
+        key = (r["shop"], r["title"], r["price"], r["length_m"])
+        if key in seen:
+            continue
+        seen.add(key)
+        if len(out) >= limit:
+            break
         d = dict(r)
         d.update(taxonomy.info(d.get("category", "")))
         d["warning"] = "Без лампочек: лампы E27 покупаются отдельно" if "bez spuldz" in d["title"].lower() else None
