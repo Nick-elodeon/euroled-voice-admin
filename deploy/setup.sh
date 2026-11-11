@@ -71,4 +71,5 @@ EOF2
 systemctl daemon-reload
 systemctl enable euroled-admin
 systemctl enable --now euroled-sync.timer
+bash "$SRC/deploy/web.sh" || echo "web.sh failed (non-fatal)"
 echo "Installed. Fill /etc/euroled-admin.env, then: systemctl restart euroled-admin && journalctl -u euroled-admin -f"

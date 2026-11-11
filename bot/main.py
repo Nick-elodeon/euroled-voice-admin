@@ -380,7 +380,7 @@ async def main():
         async with aiohttp.ClientSession() as s_:
             ip = (await (await s_.get("https://api.ipify.org", timeout=aiohttp.ClientTimeout(total=10))).text()).strip()
         if ALLOWED:
-            await bot.send_message(next(iter(ALLOWED)), f"Адрес сервера: {ip}, порт админки 8080")
+            await bot.send_message(next(iter(ALLOWED)), f"Админка: https://{ip.replace('.', '-')}.sslip.io (если не открывается, попробуйте http://{ip}:8080)")
     except Exception:
         log.warning("ip lookup failed")
     await dp.start_polling(bot)
