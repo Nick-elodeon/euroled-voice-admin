@@ -369,13 +369,49 @@ def stats() -> dict:
 EFF = "(CASE WHEN unit = 'm' AND length_m IS NOT NULL THEN COALESCE(total, price * length_m) ELSE price END)"
 
 
+# Russian/English words callers use -> stems that appear in Latvian product titles.
+_SYN = {
+    "плитка": "flīz", "плитки": "flīz", "плитку": "flīz", "tiles": "flīz", "tile": "flīz", "flīzes": "flīz",
+    "гирлянда": "virten", "гирлянду": "virten", "гирлянды": "virten", "garland": "virten", "virtene": "virten", "virtenes": "virten",
+    "серая": "pelēk", "серую": "pelēk", "серый": "pelēk", "grey": "pelēk", "gray": "pelēk", "pelēkas": "pelēk",
+    "белая": "balt", "белую": "balt", "белый": "balt", "white": "balt", "baltas": "balt",
+    "черная": "meln", "чёрная": "meln", "black": "meln",
+    "зеркало": "spoguļ", "зеркала": "spoguļ", "mirror": "spoguļ",
+    "матовая": "matēt", "матовую": "matēt", "глянцевая": "spīdīg", "глянцевую": "spīdīg",
+    "светильник": "gaismek", "светильники": "gaismek", "лампа": "spuldz", "лампочка": "spuldz",
+    "прожектор": "prožektor", "лента": "lent", "ленту": "lent",
+}
+_STOP = {"для", "на", "и", "в", "с", "по", "the", "for", "a", "of"}
+
+
+def _query_words(query: str) -> list[str]:
+    """Lower-case words, mapped to stems; words found in no product are dropped (so 'pelēkas' or a
+    stray word cannot empty the result)."""
+    words = []
+    for w in (query or "").lower().replace('"', " ").split():
+        if w in _STOP:
+            continue
+        words.append(_SYN.get(w, w))
+    if len(words) < 2:
+        return words
+    c = db()
+    keep = []
+    for w in words:
+        n = c.execute("SELECT 1 FROM products WHERE lower(title) LIKE ? OR cats LIKE ? LIMIT 1",
+                      (f"%{w}%", f"%{w}%")).fetchone()
+        if n:
+            keep.append(w)
+    c.close()
+    return keep or words
+
+
 def search(query: str = "", category: str = "", length_m: float | None = None, length_tol: float = 0.0,
            min_length: float | None = None, max_price: float | None = None, min_ip: int | None = None,
            in_stock: bool = True, sort: str = "price", limit: int = 5, shop: str = "",
            use: str = "", christmas: bool = False) -> list[dict]:
     """Filter by facts; length_m + length_tol gives a range. sort: price | price_desc | length | discount."""
     where, args = ["1=1"], []
-    for w in (query or "").lower().split():
+    for w in _query_words(query):
         where.append("(lower(title) LIKE ? OR cats LIKE ?)")
         args += [f"%{w}%", f"%{w}%"]
     if category:
