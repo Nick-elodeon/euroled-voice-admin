@@ -343,9 +343,8 @@ def make_app(eleven, state: dict) -> web.Application:
             f = _json.loads(x["fields"] or "{}")
             who = " · ".join(v for v in (x["name"], x["contact_phone"] or x["caller"]) if v) or "без имени"
             chips = "".join(f"<span class=chipx>{E(str(f[k]))}</span>" for k in ("customer_type", "urgency", "callback_time") if k in f)
-            mail = "<span class=chipx>письмо ушло</span>" if x["emailed"] else ("<span class=chipx>письмо в очереди</span>" if x["is_lead"] else "")
             items += (f"<div class=prow><div><a href='/call/{E(x['conv_id'])}'>{E(x['title'] or x['summary'][:80] or 'Звонок')}</a>"
-                      f"<div class=sub>{E(who)} · {ui.fmt_dt(x['ts'])}</div><div>{chips}{mail}</div>"
+                      f"<div class=sub>{E(who)} · {ui.fmt_dt(x['ts'])}</div><div>{chips}</div>"
                       f"<div class=sub>{E(str(f.get('products_proposed') or f.get('room_and_task') or ''))}</div></div></div>")
         sw = ("<a href='/leads?all=1'>Показать и звонки без заявки</a>" if only else "<a href='/leads'>Только заявки</a>")
         body = (f"<div class=top><h1>Заявки</h1></div><div class=panel>"
