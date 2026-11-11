@@ -299,17 +299,22 @@ def make_app(eleven, state: dict) -> web.Application:
             for x in rows:
                 chips = "".join(f"<span class=chipx>{E(str(v))}</span>" for v in
                                 (x.get("shop") or "", f"{x['length_m']} м" if x["length_m"] else "", x.get("size_cm") or "", f"IP{x['ip']}" if x["ip"] else "", f"{x['watts']} Вт" if x.get("watts") else "") if v)
-                old = ""
-                per = {'m2': 'за м²', 'm': 'за метр'}.get(x.get('unit'), 'за шт.')
-                tot = x.get('total_eur')
-                if x.get('unit') == 'm2' and x.get('box_price_eur'):
-                    sub2, val2 = f"коробка {x['pack_m2']:g} м²", f"{x['box_price_eur']:.2f} €"
-                elif x.get('unit') == 'm' and x.get('total_src') == 'check':
-                    sub2, val2 = "итого", "⚠ проверить"
+                u = x.get('unit')
+                if u in ('m', 'm2'):
+                    sub1, val1 = {'m': 'за метр', 'm2': 'за м²'}[u], f"{x['price']:.2f} €"
                 else:
-                    sub2, val2 = "итого", (f"{tot:.2f} €" if tot else "—")
+                    sub1, val1 = "за единицу", "—"
+                if u == 'm':
+                    sub2 = "целиком" if x.get('total_src') == 'site' else "целиком (не подтверждено)"
+                    val2 = f"{x['total_eur']:.2f} €" if x.get('total_eur') else "⚠ проверить"
+                elif u == 'm2':
+                    sub2 = f"коробка {x['pack_m2']:g} м²" if x.get('pack_m2') else "коробка"
+                    val2 = f"{x['box_price_eur']:.2f} €" if x.get('box_price_eur') else "—"
+                else:
+                    sub2, val2 = "целиком", f"{x['price']:.2f} €"
                 items += (f"<div class=prow><div><a href='{E(x['url'])}' target=_blank rel=noopener>{E(x['title'])}</a><div>{chips}"
-                          f"<span class=chipx>{E(str(x['stock'] if x['stock'] is not None else 'нет данных'))}{' м²' if x.get('unit') == 'm2' else ''}</span></div></div><div class=prices><div><span class=sub>{per}</span><div class=price>{x['price']:.2f} €{old}</div></div>"
+                          f"<span class=chipx>{E(str(x['stock'] if x['stock'] is not None else 'нет данных'))}{' м²' if u == 'm2' else ''}</span></div></div>"
+                          f"<div class=prices><div><span class=sub>{sub1}</span><div class=price>{val1}</div></div>"
                           f"<div><span class=sub>{sub2}</span><div class=price>{val2}</div></div></div></div>")
             res = f"<div class=panel><h2>Нашлось: {len(rows)}</h2>{items or '<p class=sub>Ничего. Попробуйте другое слово или увеличьте цену.</p>'}</div>"
         body = (f"<div class=top><h1>Каталог</h1></div><div class=kpis><div class=kpi><b>{st['products']}</b><span>товаров в базе ({E(', '.join(f'{k} {v}' for k, v in st['per_shop'].items()) or 'пусто')})</span></div>"
