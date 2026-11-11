@@ -82,7 +82,7 @@ async def run_crawl(notify: int | None = None):
         res = await catalog.crawl()
         log.info("catalog crawl: %s", res)
         if notify:
-            await bot.send_message(notify, f"Каталог обновлён: {res['products']} товаров ({', '.join(f'{k}: {v}' for k, v in res['per_shop'].items())}), страниц {res['pages']}, ошибок {res['failed']}, {res['secs']} с")
+            await bot.send_message(notify, f"Каталог обновлён: {res['products']} товаров ({', '.join(f'{k}: {v}' for k, v in res['per_shop'].items())}), страниц {res['pages']}, ошибок {res['failed']}, {res['secs']} с" + (f"\nЦены под вопросом (сайт расходится с названием): {res['check']}" if any(res.get('check', {}).values()) else ''))
     except Exception as e:
         log.exception("crawl failed")
         if notify:
@@ -118,7 +118,7 @@ async def cmd_find(m: Message, command: CommandObject):
     rows = catalog.search(q, length_m=length, length_tol=3 if length else 0, limit=8)
     if not rows:
         return await m.answer("Ничего не нашёл.")
-    await m.answer("\n".join(f"{r['price']:.2f} €{ {'m2': '/м²', 'm': '/м'}.get(r.get('unit'), '') }{' (всего ' + str(r['total_eur']) + ' €)' if r.get('total_eur') else ''} | {r['title']} | на складе: {r['stock']} | {r.get('shop')}" for r in rows))
+    await m.answer("\n".join(f"{r['price']:.2f} €{ {'m2': '/м²', 'm': '/м'}.get(r.get('unit'), '') }{' (всего ' + str(r['total_eur']) + ' €)' if r.get('total_eur') else ''}{' (коробка ' + format(r['box_price_eur'], '.2f') + ' €, ' + format(r['pack_m2'], 'g') + ' м²)' if r.get('box_price_eur') else ''} | {r['title']} | на складе: {r['stock']} | {r.get('shop')}" for r in rows))
 
 
 @router.message(Command("prompt"))

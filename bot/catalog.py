@@ -34,7 +34,8 @@ SCHEMA = """
 CREATE TABLE IF NOT EXISTS products(
   url TEXT PRIMARY KEY, title TEXT, category TEXT, price REAL, price_old REAL, discount INTEGER,
   stock INTEGER, length_m REAL, ip INTEGER, watts REAL, leds INTEGER, kelvin INTEGER,
-  color TEXT, battery INTEGER, updated REAL, shop TEXT DEFAULT 'euroled', unit TEXT, size_cm TEXT);
+  color TEXT, battery INTEGER, updated REAL, shop TEXT DEFAULT 'euroled', unit TEXT, size_cm TEXT,
+  total REAL, total_src TEXT, piece_m2 REAL, pack_pieces INTEGER, pack_m2 REAL);
 CREATE INDEX IF NOT EXISTS i_cat ON products(category);
 """
 
@@ -88,11 +89,6 @@ def parse_listing(html: str, page_url: str, shop: str = "euroled") -> list[dict]
             price = _num(price_el.get_text(strip=True))
         except ValueError:
             continue
-        old_el = a.select_one(".product__price-old")
-        old = None
-        if old_el:
-            m = re.search(r"\d+(?:[.,]\d+)?", old_el.get_text())
-            old = _num(m.group(0)) if m else None
         stock_el = a.select_one(".product__stock-badge")
         stock = None
         if stock_el:
@@ -114,7 +110,7 @@ def parse_listing(html: str, page_url: str, shop: str = "euroled") -> list[dict]
         else:
             unit = "gab"
         row = {"url": url, "title": title, "category": category, "price": price,
-               "price_old": old, "discount": disc, "stock": stock, "shop": shop, "unit": unit}
+               "price_old": None, "discount": disc, "stock": stock, "shop": shop, "unit": unit}
         row.update(parse_facts(title))
         out.append(row)
     return out
@@ -137,14 +133,15 @@ def db() -> sqlite3.Connection:
     c.row_factory = sqlite3.Row
     c.executescript(SCHEMA)
     cols = {r[1] for r in c.execute("PRAGMA table_info(products)")}
-    for name, typ in (("shop", "TEXT DEFAULT 'euroled'"), ("unit", "TEXT"), ("size_cm", "TEXT")):
+    for name, typ in (("shop", "TEXT DEFAULT 'euroled'"), ("unit", "TEXT"), ("size_cm", "TEXT"), ("total", "REAL"),
+                      ("total_src", "TEXT"), ("piece_m2", "REAL"), ("pack_pieces", "INTEGER"), ("pack_m2", "REAL")):
         if name not in cols:
             c.execute(f"ALTER TABLE products ADD COLUMN {name} {typ}")
     c.commit()
     return c
 
 
-CRAWL_VERSION = 3  # bump when parsing changes: forces a fresh crawl on next start
+CRAWL_VERSION = 4  # bump when parsing changes: forces a fresh crawl on next start
 MARKER = os.path.join(os.path.dirname(DB_PATH) or ".", "crawl_done.json")
 
 
@@ -166,10 +163,73 @@ def _save(rows, now):
         for r in rows:
             r = dict(r, updated=now)
             c.execute(
-                "INSERT OR REPLACE INTO products(url,title,category,price,price_old,discount,stock,"
+                "INSERT INTO products(url,title,category,price,price_old,discount,stock,"
                 "length_m,ip,watts,leds,kelvin,color,battery,updated,shop,unit,size_cm) VALUES(:url,:title,:category,:price,"
-                ":price_old,:discount,:stock,:length_m,:ip,:watts,:leds,:kelvin,:color,:battery,:updated,:shop,:unit,:size_cm)", r)
+                ":price_old,:discount,:stock,:length_m,:ip,:watts,:leds,:kelvin,:color,:battery,:updated,:shop,:unit,:size_cm) "
+                "ON CONFLICT(url) DO UPDATE SET title=excluded.title, category=excluded.category, price_old=NULL, "
+                "discount=excluded.discount, stock=excluded.stock, length_m=excluded.length_m, ip=excluded.ip, "
+                "watts=excluded.watts, leds=excluded.leds, kelvin=excluded.kelvin, color=excluded.color, "
+                "battery=excluded.battery, updated=excluded.updated, shop=excluded.shop, unit=excluded.unit, "
+                "size_cm=excluded.size_cm, "
+                "total=CASE WHEN products.price = excluded.price AND products.length_m IS excluded.length_m THEN products.total ELSE NULL END, "
+                "total_src=CASE WHEN products.price = excluded.price AND products.length_m IS excluded.length_m THEN products.total_src ELSE NULL END, "
+                "price=excluded.price", r)
     c.close()
+
+
+def parse_detail(html: str, row: dict) -> dict:
+    """Facts only the product page has: the real order total (per-metre goods) and the pack size (tiles)."""
+    soup = BeautifulSoup(html, "html.parser")
+    out: dict = {}
+    if row["unit"] == "m" and row.get("length_m"):
+        blk = soup.select_one(".card__price")
+        total = None
+        if blk:
+            el = blk.select_one(".card__pice-sale-value")
+            m = re.search(r"\d+(?:[.,]\d+)?", (el or blk).get_text(" ", strip=True))
+            total = _num(m.group(0)) if m else None
+        calc = row["price"] * row["length_m"]
+        if total is not None and abs(total - calc) <= max(0.5, 0.03 * calc):
+            out.update(total=round(total, 2), total_src="site")
+        else:  # the site disagrees with the title: never guess
+            out.update(total=None, total_src="check")
+    elif row["unit"] == "m2":
+        el = soup.select_one("#piecesCart")
+        try:
+            piece = float(el["data-area-of-piece"])
+            n = int(el["data-pieces-in-package"])
+            out.update(piece_m2=piece, pack_pieces=n, pack_m2=round(piece * n, 4))
+        except (TypeError, KeyError, ValueError):
+            pass
+    return out
+
+
+async def enrich(s: aiohttp.ClientSession, shop: str, delay: float = 0.4) -> dict:
+    """Open product pages that need a real total or a pack size; only those that changed."""
+    c = db()
+    todo = [dict(r) for r in c.execute(
+        "SELECT * FROM products WHERE shop = ? AND ((unit = 'm' AND length_m IS NOT NULL AND total_src IS NULL) "
+        "OR (unit = 'm2' AND pack_m2 IS NULL))", (shop,))]
+    c.close()
+    done = check = 0
+    for r in todo:
+        PROGRESS["last_url"] = r["url"]
+        html = await _get(s, r["url"])
+        await asyncio.sleep(delay)
+        if html is None:
+            continue
+        d = parse_detail(html, r)
+        if not d:
+            continue
+        if d.get("total_src") == "check":
+            check += 1
+        c = db()
+        with c:
+            sets = ", ".join(f"{k} = ?" for k in d)
+            c.execute(f"UPDATE products SET {sets} WHERE url = ?", [*d.values(), r["url"]])
+        c.close()
+        done += 1
+    return {"enriched": done, "check": check}
 
 
 async def _get(s: aiohttp.ClientSession, url: str) -> str | None:
@@ -197,6 +257,7 @@ async def crawl(max_pages: int = 4000, delay: float = 0.6) -> dict:
     PROGRESS.update(running=True, pages=0, products=0, failed=0, last_error="", started=t0, finished=0, shop="")
     total = {"products": 0, "pages": 0, "failed": 0}
     per_shop: dict[str, int] = {}
+    checks: dict[str, int] = {}
     async with aiohttp.ClientSession(headers=HEADERS) as s:
         for shop, cfg in SHOPS.items():
             PROGRESS["shop"] = shop
@@ -247,6 +308,10 @@ async def crawl(max_pages: int = 4000, delay: float = 0.6) -> dict:
                 with c:  # gone from the site (only this shop)
                     c.execute("DELETE FROM products WHERE shop = ? AND updated < ?", (shop, t0))
                 c.close()
+            PROGRESS["phase"] = "цены на страницах товаров"
+            en = await enrich(s, shop)
+            checks[shop] = en["check"]
+            PROGRESS["phase"] = ""
             per_shop[shop] = len(products)
             total["products"] += len(products)
             total["pages"] += pages
@@ -257,7 +322,20 @@ async def crawl(max_pages: int = 4000, delay: float = 0.6) -> dict:
     except Exception:
         log.warning("cannot write crawl marker")
     PROGRESS.update(running=False, finished=time.time(), shop="", pages=total["pages"], products=total["products"], failed=total["failed"])
-    return {**total, "per_shop": per_shop, "secs": round(time.time() - t0)}
+    return {**total, "per_shop": per_shop, "check": checks, "secs": round(time.time() - t0)}
+
+
+RESERVE = 0.10  # tiles: +10% for cuts, so the order surely suffices
+
+
+def tile_plan(price_m2: float, pack_m2: float, area_m2: float, reserve: float = RESERVE) -> dict:
+    """Whole boxes only: area + reserve, rounded up to boxes. Totals in cents via integers."""
+    import math
+    need = area_m2 * (1 + reserve)
+    boxes = max(1, math.ceil(round(need / pack_m2, 6)))
+    box_cents = round(price_m2 * pack_m2 * 100)
+    return {"need_m2": round(need, 2), "boxes": boxes, "boxes_m2": round(boxes * pack_m2, 2),
+            "box_price_eur": box_cents / 100, "total_eur": boxes * box_cents / 100}
 
 
 def stats() -> dict:
@@ -269,7 +347,7 @@ def stats() -> dict:
 
 
 # real order price: per-metre goods are compared by the total for their length
-EFF = "(CASE WHEN unit = 'm' AND length_m IS NOT NULL THEN price * length_m ELSE price END)"
+EFF = "(CASE WHEN unit = 'm' AND length_m IS NOT NULL THEN COALESCE(total, price * length_m) ELSE price END)"
 
 
 def search(query: str = "", category: str = "", length_m: float | None = None, length_tol: float = 0.0,
@@ -320,7 +398,8 @@ def search(query: str = "", category: str = "", length_m: float | None = None, l
         d = dict(r)
         d.update(taxonomy.info(d.get("category", "")))
         d["warning"] = "Без лампочек: лампы E27 покупаются отдельно" if "bez spuldz" in d["title"].lower() else None
-        d["total_eur"] = round(d["price"] * d["length_m"], 2) if d.get("unit") == "m" and d.get("length_m") else None
+        d["total_eur"] = d["total"] if d.get("unit") == "m" and d.get("total_src") == "site" else None
+        d["box_price_eur"] = round(d["price"] * d["pack_m2"], 2) if d.get("unit") == "m2" and d.get("pack_m2") else None
         out.append(d)
     return out
 

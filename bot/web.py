@@ -299,9 +299,18 @@ def make_app(eleven, state: dict) -> web.Application:
             for x in rows:
                 chips = "".join(f"<span class=chipx>{E(str(v))}</span>" for v in
                                 (x.get("shop") or "", f"{x['length_m']} м" if x["length_m"] else "", x.get("size_cm") or "", f"IP{x['ip']}" if x["ip"] else "", f"{x['watts']} Вт" if x.get("watts") else "") if v)
-                old = f"<s>{x['price_old']:.2f} €</s>" if x.get("price_old") else ""
+                old = ""
+                per = {'m2': 'за м²', 'm': 'за метр'}.get(x.get('unit'), 'за шт.')
+                tot = x.get('total_eur')
+                if x.get('unit') == 'm2' and x.get('box_price_eur'):
+                    sub2, val2 = f"коробка {x['pack_m2']:g} м²", f"{x['box_price_eur']:.2f} €"
+                elif x.get('unit') == 'm' and x.get('total_src') == 'check':
+                    sub2, val2 = "итого", "⚠ проверить"
+                else:
+                    sub2, val2 = "итого", (f"{tot:.2f} €" if tot else "—")
                 items += (f"<div class=prow><div><a href='{E(x['url'])}' target=_blank rel=noopener>{E(x['title'])}</a><div>{chips}"
-                          f"<span class=chipx>{E(str(x['stock'] if x['stock'] is not None else 'нет данных'))}{' м²' if x.get('unit') == 'm2' else ''}</span></div></div><div class=price>{x['price']:.2f} €{ {'m2': '/м²', 'm': '/м'}.get(x.get('unit'), '') }{('<s>всего ' + str(x['total_eur']) + ' €</s>') if x.get('total_eur') else ''}{old}</div></div>")
+                          f"<span class=chipx>{E(str(x['stock'] if x['stock'] is not None else 'нет данных'))}{' м²' if x.get('unit') == 'm2' else ''}</span></div></div><div class=prices><div><span class=sub>{per}</span><div class=price>{x['price']:.2f} €{old}</div></div>"
+                          f"<div><span class=sub>{sub2}</span><div class=price>{val2}</div></div></div></div>")
             res = f"<div class=panel><h2>Нашлось: {len(rows)}</h2>{items or '<p class=sub>Ничего. Попробуйте другое слово или увеличьте цену.</p>'}</div>"
         body = (f"<div class=top><h1>Каталог</h1></div><div class=kpis><div class=kpi><b>{st['products']}</b><span>товаров в базе ({E(', '.join(f'{k} {v}' for k, v in st['per_shop'].items()) or 'пусто')})</span></div>"
                 f"<div class=kpi><b style='font-size:17px'>{when}</b><span>последнее обновление</span></div></div>"
@@ -338,20 +347,33 @@ def make_app(eleven, state: dict) -> web.Application:
         out = []
         for x in rows:
             u, p = x["unit"], x["price"]
-            tot = x.get("total_eur")
+            tot, box, plan = x.get("total_eur"), x.get("box_price_eur"), None
             if u == "m" and tot:
                 say = f"{tot:.2f} € за всю гирлянду/ленту {x['length_m']:g} м ({p:.2f} € за метр)"
+            elif u == "m" and x.get("length_m"):
+                say = (f"{p:.2f} € за метр; точный итог на длину {x['length_m']:g} м не подтверждён, "
+                       f"скажи «примерно {p * x['length_m']:.0f} €, точную сумму подтвердит менеджер»")
             elif u == "m":
-                say = f"{p:.2f} € за метр; общая цена зависит от длины, уточни у клиента нужную длину и умножь"
-            elif u == "m2":
-                say = f"{p:.2f} € за м²"
+                say = f"{p:.2f} € за метр; общая цена зависит от длины, уточни у клиента нужную длину"
+            elif u == "m2" and x.get("pack_m2"):
+                say = (f"{p:.2f} € за м². Продаётся коробками: в коробке {x['pack_m2']:g} м² "
+                       f"({x['pack_pieces']} шт.), коробка стоит {box:.2f} €")
                 if area:
-                    tot = round(p * area, 2)
-                    say += f"; на {area:g} м² будет {tot:.2f} € (без запаса, советуй брать +10%)"
+                    plan = catalog.tile_plan(p, x["pack_m2"], area)
+                    tot = plan["total_eur"]
+                    say += (f". На {area:g} м² с запасом 10% ({plan['need_m2']:g} м²) нужно {plan['boxes']} коробок "
+                            f"({plan['boxes_m2']:g} м²), итого {tot:.2f} €")
+            elif u == "m2":
+                say = f"{p:.2f} € за м². Размер коробки не подтверждён: итог на объём посчитает менеджер"
             else:
                 say = f"{p:.2f} € за штуку"
-            out.append({"name": x["title"], "price_to_say": say, "total_eur": tot, "was_per_unit_eur": x["price_old"],
-                        "unit": {"m2": "за м²", "m": "за метр", "gab": "за штуку"}.get(u, "за штуку"),
+            out.append({"name": x["title"], "price_to_say": say,
+                        "unit_price_eur": p,
+                        "unit_price_per": {"m2": "за м²", "m": "за метр", "gab": "за штуку"}.get(u, "за штуку"),
+                        "order_total_eur": tot,
+                        "box_price_eur": box, "box_m2": x.get("pack_m2"), "pieces_per_box": x.get("pack_pieces"),
+                        "boxes_needed": plan["boxes"] if plan else None,
+                        "total_is_confirmed_by_site": bool(tot) and (u != "m" or x.get("total_src") == "site"),
                         "in_stock": x["stock"], "length_m": x["length_m"], "ip": x["ip"], "size_cm": x["size_cm"],
                         "shop": x["shop"], "url": x["url"], "kind": x.get("kind_ru"), "use": x.get("use"),
                         "note": x.get("note"), "warning": x.get("warning")})

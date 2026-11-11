@@ -112,6 +112,7 @@ button.pri,a.pri{display:inline-block;font:inherit;font-weight:600;padding:11px 
 .err{border:1.5px solid var(--bad);color:var(--ink);border-radius:var(--rs);padding:12px 14px;margin-bottom:12px}
 .rng{display:flex;align-items:center;gap:12px}.rng output{min-width:42px;text-align:right;font-variant-numeric:tabular-nums;color:var(--ink2)}
 .price{font-family:Unbounded,sans-serif;font-weight:600;font-size:17px;white-space:nowrap}
+.prices{display:flex;gap:18px;text-align:right}.prices .sub{display:block;font-size:12px}
 .price s{display:block;font:13px Onest;color:var(--mut)}
 .chipx{display:inline-block;font-size:12px;padding:2px 8px;border-radius:99px;background:var(--soft);color:var(--ink2);margin:2px 4px 0 0}
 .prow{display:grid;grid-template-columns:1fr auto;gap:12px;padding:12px 0;border-top:1px solid var(--line);align-items:start}
