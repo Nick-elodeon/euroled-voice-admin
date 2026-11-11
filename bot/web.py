@@ -13,6 +13,7 @@ from aiohttp import web
 
 import catalog
 import leads
+import rules
 import ui
 from ui import E, page
 
@@ -204,7 +205,12 @@ def make_app(eleven, state: dict) -> web.Application:
                 f"<span class=sub>{ui.fmt_dt(ts) if ts else ''} · {ui.fmt_dur(dur)}</span></p>"
                 f"<p>{E(summ) or '<span class=sub>Краткого пересказа нет.</span>'}</p>"
                 f"<audio controls preload=none src='/audio/{E(cid)}'></audio></div>"
-                f"<div class=panel><h2>Разговор</h2><div class=chat>{lines or '<p class=sub>Текста нет.</p>'}</div></div>")
+                f"<div class=panel><h2>Разговор</h2><div class=chat>{lines or '<p class=sub>Текста нет.</p>'}</div></div>"
+                f"<div class=panel><h2>Бот ошибся?</h2><form method=post action='/rules/add'>"
+                f"<input type=hidden name=conv_id value='{E(cid)}'>"
+                "<label>Что сделать иначе<textarea name=note rows=3 placeholder='Например: не предлагай уличную гирлянду без IP44'></textarea>"
+                "<small>Станет правилом в промпте для всех следующих звонков. Отключить можно на странице правил.</small></label>"
+                "<button class=pri>Добавить правило</button></form></div>")
         return page("Звонок", body, "/")
 
     @r.get("/audio/{cid}")
@@ -253,7 +259,7 @@ def make_app(eleven, state: dict) -> web.Application:
             p, e = "", err_box(f"Не удалось прочитать промпт: {ex}")
         body = (f"<div class=top><h1>Промпт</h1><small>{len(p)} знаков</small></div>{toast(request)}{e}<div class=panel>"
                 f"<form method=post><label>Инструкция агента<textarea name=prompt>{E(p)}</textarea>"
-                "<small>Предыдущая версия сохраняется на сервере. Откат: /rollback в Telegram.</small></label>"
+                "<small>Предыдущая версия сохраняется на сервере. Откат: /rollback в Telegram. <a href='/rules'>Правила из разбора звонков</a></small></label>"
                 "<button class=pri>Сохранить промпт</button></form></div>")
         return page("Промпт", body, "/prompt")
 
@@ -268,6 +274,49 @@ def make_app(eleven, state: dict) -> web.Application:
         open(f"/var/lib/euroled-admin/prompts/{int(time.time())}.txt", "w").write(old)
         await eleven.set_prompt(text)
         raise web.HTTPFound("/prompt?ok=1")
+
+    @r.post("/rules/add")
+    async def rules_add(request):
+        d = await request.post()
+        note = (d.get("note") or "").strip()
+        rule = rules.to_rule(note)
+        if len(rule) < 8:
+            return page("Правила", err_box("Правило слишком короткое. Вернитесь назад и опишите, что бот должен делать иначе."), "/prompt")
+        rules.add(d.get("conv_id", ""), note, rule)
+        await _apply_rules()
+        raise web.HTTPFound("/rules?ok=1")
+
+    @r.post("/rules/toggle")
+    async def rules_toggle(request):
+        d = await request.post()
+        rules.set_active(int(d.get("id", "0")), d.get("on") == "1")
+        await _apply_rules()
+        raise web.HTTPFound("/rules?ok=1")
+
+    @r.get("/rules")
+    async def rules_page(request):
+        items = ""
+        for x in rules.all_rules():
+            on = bool(x["active"])
+            link = f" · <a href='/call/{E(x['conv_id'])}'>звонок</a>" if x["conv_id"] else ""
+            items += (f"<div class=prow><div><div{'' if on else ' style=opacity:.5'}>{E(x['rule'])}</div>"
+                      f"<div class=sub>{ui.fmt_dt(x['ts'])}{link} · {'действует' if on else 'отключено'}</div></div>"
+                      f"<form method=post action='/rules/toggle'><input type=hidden name=id value={x['id']}>"
+                      f"<input type=hidden name=on value={0 if on else 1}><button>{'Отключить' if on else 'Включить'}</button></form></div>")
+        body = (f"<div class=top><h1>Правила</h1></div>{toast(request)}<div class=panel>"
+                f"{items or '<p class=sub>Правил пока нет. Откройте звонок и нажмите «Добавить правило» в блоке «Бот ошибся?».</p>'}"
+                "</div><p class=sub><a href='/prompt'>К промпту</a></p>")
+        return page("Правила", body, "/prompt")
+
+    async def _apply_rules():
+        """Write the active rules into the agent prompt (previous prompt is saved first)."""
+        old = await eleven.get_prompt()
+        new = rules.merge(old, rules.active_rules())
+        if new.strip() == old.strip():
+            return
+        os.makedirs("/var/lib/euroled-admin/prompts", exist_ok=True)
+        open(f"/var/lib/euroled-admin/prompts/{int(time.time())}.txt", "w").write(old)
+        await eleven.set_prompt(new)
 
     @r.get("/catalog")
     async def cat(request):
