@@ -408,10 +408,11 @@ def _query_words(query: str) -> list[str]:
 def search(query: str = "", category: str = "", length_m: float | None = None, length_tol: float = 0.0,
            min_length: float | None = None, max_price: float | None = None, min_ip: int | None = None,
            in_stock: bool = True, sort: str = "price", limit: int = 5, shop: str = "",
-           use: str = "", christmas: bool = False) -> list[dict]:
+           use: str = "", christmas: bool = False, _words: list[str] | None = None) -> list[dict]:
     """Filter by facts; length_m + length_tol gives a range. sort: price | price_desc | length | discount."""
     where, args = ["1=1"], []
-    for w in _query_words(query):
+    words = _query_words(query) if _words is None else _words
+    for w in words:
         where.append("(lower(title) LIKE ? OR cats LIKE ?)")
         args += [f"%{w}%", f"%{w}%"]
     if category:
@@ -448,6 +449,10 @@ def search(query: str = "", category: str = "", length_m: float | None = None, l
     rows = c.execute(f"SELECT * FROM products WHERE {' AND '.join(where)} ORDER BY {order} LIMIT ?",
                      args + [limit * 4]).fetchall()
     c.close()
+    if not rows and len(words) > 1:
+        # nothing matches every word (colours etc. are often not in titles): relax by dropping the last word
+        return search(query, category, length_m, length_tol, min_length, max_price, min_ip, in_stock, sort,
+                      limit, shop, use, christmas, _words=words[:-1])
     out, seen = [], set()
     for r in rows:
         key = (r["shop"], r["title"], r["price"], r["length_m"])
