@@ -79,6 +79,26 @@ class Eleven:
     async def conversation(self, conversation_id: str):
         return await self._req("GET", f"/convai/conversations/{conversation_id}")
 
+    async def conversations(self, page_size: int = 30, cursor: str | None = None):
+        params = {"agent_id": self.agent_id, "page_size": page_size}
+        if cursor:
+            params["cursor"] = cursor
+        return await self._req("GET", "/convai/conversations", params=params)
+
+    async def audio_url_bytes(self, conversation_id: str) -> bytes:
+        async with aiohttp.ClientSession(headers={"xi-api-key": self.key}) as s:
+            async with s.get(f"{BASE}/convai/conversations/{conversation_id}/audio") as r:
+                if r.status >= 400:
+                    raise RuntimeError(f"audio {r.status}")
+                return await r.read()
+
+    async def get_voice(self) -> dict:
+        a = await self.get_agent()
+        return a["conversation_config"].get("tts", {})
+
+    async def set_voice(self, tts: dict):
+        return await self._patch_agent({"tts": tts})
+
     async def transcribe(self, audio: bytes, filename: str = "voice.ogg") -> str:
         form = aiohttp.FormData()
         form.add_field("model_id", "scribe_v1")

@@ -16,6 +16,7 @@ from aiohttp import web
 
 from eleven import Eleven, verify_webhook
 import catalog
+import web as webadmin
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("admin")
@@ -368,6 +369,20 @@ async def main():
     else:
         asyncio.create_task(poll_calls())
     asyncio.create_task(daily_catalog())
+    st, new_pw = webadmin.ensure_secrets()
+    runner = web.AppRunner(webadmin.make_app(eleven, st))
+    await runner.setup()
+    await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("ADMIN_PORT", "8080"))).start()
+    if new_pw and ALLOWED:
+        await bot.send_message(next(iter(ALLOWED)), f"Пароль админки (сохраните, показываю один раз): {new_pw}")
+    try:
+        import aiohttp
+        async with aiohttp.ClientSession() as s_:
+            ip = (await (await s_.get("https://api.ipify.org", timeout=aiohttp.ClientTimeout(total=10))).text()).strip()
+        if ALLOWED:
+            await bot.send_message(next(iter(ALLOWED)), f"Адрес сервера: {ip}, порт админки 8080")
+    except Exception:
+        log.warning("ip lookup failed")
     await dp.start_polling(bot)
 
 
