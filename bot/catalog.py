@@ -118,6 +118,21 @@ def db() -> sqlite3.Connection:
     return c
 
 
+PROGRESS: dict = {"running": False, "pages": 0, "products": 0, "failed": 0, "last_error": "", "last_url": "", "started": 0, "finished": 0}
+
+
+def _save(rows, now):
+    c = db()
+    with c:
+        for r in rows:
+            r = dict(r, updated=now)
+            c.execute(
+                "INSERT OR REPLACE INTO products(url,title,category,price,price_old,discount,stock,"
+                "length_m,ip,watts,leds,kelvin,color,battery,updated) VALUES(:url,:title,:category,:price,"
+                ":price_old,:discount,:stock,:length_m,:ip,:watts,:leds,:kelvin,:color,:battery,:updated)", r)
+    c.close()
+
+
 async def _get(s: aiohttp.ClientSession, url: str) -> str | None:
     for attempt in range(3):
         try:
@@ -125,12 +140,14 @@ async def _get(s: aiohttp.ClientSession, url: str) -> str | None:
                 if r.status == 200:
                     return await r.text()
                 log.warning("GET %s -> %s", url, r.status)
+                PROGRESS["last_error"] = f"HTTP {r.status} на {url}"
                 if r.status in (403, 429, 503):
                     await asyncio.sleep(5 * (attempt + 1))
                 else:
                     return None
         except Exception as e:  # network hiccup
             log.warning("GET %s failed: %s", url, e)
+            PROGRESS["last_error"] = f"{type(e).__name__}: {e} ({url})"
             await asyncio.sleep(3)
     return None
 
@@ -138,6 +155,7 @@ async def _get(s: aiohttp.ClientSession, url: str) -> str | None:
 async def crawl(max_pages: int = 3000, delay: float = 0.6) -> dict:
     """BFS over categories; paginate listings with ?page=N. Returns stats."""
     t0 = time.time()
+    PROGRESS.update(running=True, pages=0, products=0, failed=0, last_error="", started=t0, finished=0)
     seen_pages: set[str] = set()
     product_urls: set[str] = set()
     products: dict[str, dict] = {}
@@ -149,15 +167,19 @@ async def crawl(max_pages: int = 3000, delay: float = 0.6) -> dict:
             if url in seen_pages or url in product_urls:
                 continue
             seen_pages.add(url)
+            PROGRESS["last_url"] = url
             html = await _get(s, url)
             pages += 1
             if html is None:
                 blocked += 1
+                PROGRESS.update(pages=pages, failed=blocked)
                 continue
             rows = parse_listing(html, url)
             for r in rows:
                 product_urls.add(r["url"])
                 products[r["url"]] = r
+            if rows:
+                _save(rows, t0)
             if rows:  # listing: walk the following pages
                 n = 2
                 while n < 60:
@@ -172,6 +194,8 @@ async def crawl(max_pages: int = 3000, delay: float = 0.6) -> dict:
                     for r in more:
                         products[r["url"]] = r
                         product_urls.add(r["url"])
+                    _save(more, t0)
+                    PROGRESS.update(pages=pages, products=len(products))
                     n += 1
             for link in category_links(html, url):
                 if link not in seen_pages and link not in product_urls:
@@ -179,16 +203,10 @@ async def crawl(max_pages: int = 3000, delay: float = 0.6) -> dict:
             await asyncio.sleep(delay)
     if products:
         c = db()
-        now = time.time()
         with c:
-            for r in products.values():
-                r["updated"] = now
-                c.execute(
-                    "INSERT OR REPLACE INTO products(url,title,category,price,price_old,discount,stock,"
-                    "length_m,ip,watts,leds,kelvin,color,battery,updated) VALUES(:url,:title,:category,:price,"
-                    ":price_old,:discount,:stock,:length_m,:ip,:watts,:leds,:kelvin,:color,:battery,:updated)", r)
-            c.execute("DELETE FROM products WHERE updated < ?", (now,))  # gone from the site
+            c.execute("DELETE FROM products WHERE updated < ?", (t0,))  # gone from the site
         c.close()
+    PROGRESS.update(running=False, pages=pages, products=len(products), failed=blocked, finished=time.time())
     return {"products": len(products), "pages": pages, "failed": blocked, "secs": round(time.time() - t0)}
 
 

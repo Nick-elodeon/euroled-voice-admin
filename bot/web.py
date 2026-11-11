@@ -273,6 +273,12 @@ def make_app(eleven, state: dict) -> web.Application:
         q = request.query
         st = catalog.stats()
         when = ui.fmt_dt(int(st["updated"])) if st["updated"] else "ни разу"
+        pr = catalog.PROGRESS
+        if pr["running"]:
+            status = f"<div class=panel><b>Сбор идёт.</b> Страниц: {pr['pages']}, товаров: {pr['products']}, ошибок: {pr['failed']}.<p class=sub>Сейчас: {E(pr['last_url'])}</p>" + (f"<p class=sub>Последняя ошибка: {E(pr['last_error'])}</p>" if pr["last_error"] else "") + "<p class=sub>Обновите страницу через минуту.</p></div>"
+        else:
+            bad = f"<div class=err>Последняя ошибка: {E(pr['last_error'])}</div>" if pr["last_error"] else ""
+            status = bad + "<div class=panel><form method=post action=/catalog/crawl><button class=pri>Собрать каталог сейчас</button></form></div>"
         form = ("<form><label>Что ищем<input name=q placeholder='virtene, aizkari, lenta' value='" + E(q.get("q", "")) + "'></label>"
                 "<label>Длина, м<input name=length inputmode=decimal placeholder='15' value='" + E(q.get("length", "")) + "'></label>"
                 "<label>Не дороже, €<input name=max_price inputmode=decimal placeholder='60' value='" + E(q.get("max_price", "")) + "'></label>"
@@ -295,8 +301,16 @@ def make_app(eleven, state: dict) -> web.Application:
             res = f"<div class=panel><h2>Нашлось: {len(rows)}</h2>{items or '<p class=sub>Ничего. Попробуйте другое слово или увеличьте цену.</p>'}</div>"
         body = (f"<div class=top><h1>Каталог</h1></div><div class=kpis><div class=kpi><b>{st['products']}</b><span>товаров в базе</span></div>"
                 f"<div class=kpi><b style='font-size:17px'>{when}</b><span>последнее обновление</span></div></div>"
-                f"<div class=panel>{form}</div>{res}<p class=sub>Обновить каталог вручную: /catalog crawl в Telegram.</p>")
+                f"{status}<div class=panel>{form}</div>{res}<p class=sub>Обновить каталог вручную: /catalog crawl в Telegram.</p>")
         return page("Каталог", body, "/catalog")
+
+    @r.post("/catalog/crawl")
+    async def crawl_now(request):
+        import asyncio
+        if not catalog.PROGRESS["running"]:
+            asyncio.create_task(catalog.crawl())
+            catalog.PROGRESS["running"] = True
+        raise web.HTTPFound("/catalog")
 
     @r.get("/api/search")
     async def api_search(request):
