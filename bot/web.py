@@ -275,11 +275,15 @@ def make_app(eleven, state: dict) -> web.Application:
         when = ui.fmt_dt(int(st["updated"])) if st["updated"] else "ни разу"
         pr = catalog.PROGRESS
         if pr["running"]:
-            status = f"<div class=panel><b>Сбор идёт.</b> Страниц: {pr['pages']}, товаров: {pr['products']}, ошибок: {pr['failed']}.<p class=sub>Сейчас: {E(pr['last_url'])}</p>" + (f"<p class=sub>Последняя ошибка: {E(pr['last_error'])}</p>" if pr["last_error"] else "") + "<p class=sub>Обновите страницу через минуту.</p></div>"
+            sh = f" ({E(pr.get('shop', ''))})" if pr.get("shop") else ""
+            status = f"<div class=panel><b>Сбор идёт{sh}.</b> Страниц: {pr['pages']}, товаров: {pr['products']}, ошибок: {pr['failed']}.<p class=sub>Сейчас: {E(pr['last_url'])}</p>" + (f"<p class=sub>Последняя ошибка: {E(pr['last_error'])}</p>" if pr["last_error"] else "") + "<p class=sub>Обновите страницу через минуту.</p></div>"
         else:
             bad = f"<div class=err>Последняя ошибка: {E(pr['last_error'])}</div>" if pr["last_error"] else ""
             status = bad + "<div class=panel><form method=post action=/catalog/crawl><button class=pri>Собрать каталог сейчас</button></form></div>"
-        form = ("<form><label>Что ищем<input name=q placeholder='virtene, aizkari, lenta' value='" + E(q.get("q", "")) + "'></label>"
+        shop_sel = ("<label>Магазин<select name=shop>" + "".join(
+            f"<option value='{k}'{' selected' if q.get('shop', '') == k else ''}>{v}</option>"
+            for k, v in (("", "Оба"), ("euroled", "euroled.lv"), ("euroflizes", "euroflizes.lv"))) + "</select></label>")
+        form = ("<form>" + shop_sel + "<label>Что ищем<input name=q placeholder='virtene, aizkari, lenta' value='" + E(q.get("q", "")) + "'></label>"
                 "<label>Длина, м<input name=length inputmode=decimal placeholder='15' value='" + E(q.get("length", "")) + "'></label>"
                 "<label>Не дороже, €<input name=max_price inputmode=decimal placeholder='60' value='" + E(q.get("max_price", "")) + "'></label>"
                 "<button class=pri>Найти</button></form>")
@@ -288,18 +292,18 @@ def make_app(eleven, state: dict) -> web.Application:
             try:
                 rows = catalog.search(q.get("q", ""), length_m=float(q["length"]) if q.get("length") else None,
                                       length_tol=3 if q.get("length") else 0,
-                                      max_price=float(q["max_price"]) if q.get("max_price") else None, limit=30)
+                                      max_price=float(q["max_price"]) if q.get("max_price") else None, limit=30, shop=q.get("shop", ""))
             except ValueError:
                 rows = []
             items = ""
             for x in rows:
                 chips = "".join(f"<span class=chipx>{E(str(v))}</span>" for v in
-                                (f"{x['length_m']} м" if x["length_m"] else "", f"IP{x['ip']}" if x["ip"] else "", f"{x['watts']} Вт" if x.get("watts") else "") if v)
+                                (x.get("shop") or "", f"{x['length_m']} м" if x["length_m"] else "", x.get("size_cm") or "", f"IP{x['ip']}" if x["ip"] else "", f"{x['watts']} Вт" if x.get("watts") else "") if v)
                 old = f"<s>{x['price_old']:.2f} €</s>" if x.get("price_old") else ""
                 items += (f"<div class=prow><div><a href='{E(x['url'])}' target=_blank rel=noopener>{E(x['title'])}</a><div>{chips}"
-                          f"<span class=chipx>{E(str(x['stock'] or 'нет данных'))}</span></div></div><div class=price>{x['price']:.2f} €{old}</div></div>")
+                          f"<span class=chipx>{E(str(x['stock'] if x['stock'] is not None else 'нет данных'))}{' м²' if x.get('unit') == 'm2' else ''}</span></div></div><div class=price>{x['price']:.2f} €{'/м²' if x.get('unit') == 'm2' else ''}{old}</div></div>")
             res = f"<div class=panel><h2>Нашлось: {len(rows)}</h2>{items or '<p class=sub>Ничего. Попробуйте другое слово или увеличьте цену.</p>'}</div>"
-        body = (f"<div class=top><h1>Каталог</h1></div><div class=kpis><div class=kpi><b>{st['products']}</b><span>товаров в базе</span></div>"
+        body = (f"<div class=top><h1>Каталог</h1></div><div class=kpis><div class=kpi><b>{st['products']}</b><span>товаров в базе ({E(', '.join(f'{k} {v}' for k, v in st['per_shop'].items()) or 'пусто')})</span></div>"
                 f"<div class=kpi><b style='font-size:17px'>{when}</b><span>последнее обновление</span></div></div>"
                 f"{status}<div class=panel>{form}</div>{res}<p class=sub>Обновить каталог вручную: /catalog crawl в Telegram.</p>")
         return page("Каталог", body, "/catalog")
@@ -327,10 +331,11 @@ def make_app(eleven, state: dict) -> web.Application:
         rows = catalog.search(q.get("query", ""), category=q.get("category", ""), length_m=fl("length_m"),
                               length_tol=fl("length_tol") or 0, max_price=fl("max_price"),
                               min_ip=int(q["min_ip"]) if q.get("min_ip", "").isdigit() else None,
-                              in_stock=q.get("in_stock", "1") != "0", sort=q.get("sort", "price"),
+                              in_stock=q.get("in_stock", "1") != "0", sort=q.get("sort", "price"), shop=q.get("shop", ""),
                               limit=min(int(q.get("limit", 5)), 10) if q.get("limit", "5").isdigit() else 5)
         out = [{"name": x["title"], "price_eur": x["price"], "was_eur": x["price_old"], "stock": x["stock"],
-                "length_m": x["length_m"], "ip": x["ip"], "url": x["url"], "category": x["category"]} for x in rows]
+                "length_m": x["length_m"], "ip": x["ip"], "url": x["url"], "category": x["category"],
+                "shop": x["shop"], "unit": x["unit"], "size_cm": x["size_cm"]} for x in rows]
         return web.json_response({"count": len(out), "products": out})
 
     app.add_routes(r)
