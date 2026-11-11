@@ -5,6 +5,8 @@ import io
 import json
 import logging
 import os
+import re
+import time
 
 from aiogram import Bot, Dispatcher, F, Router
 from aiogram.filters import Command, CommandObject
@@ -13,6 +15,7 @@ from aiogram.types import (BufferedInputFile, CallbackQuery, InlineKeyboardButto
 from aiohttp import web
 
 from eleven import Eleven, verify_webhook
+import catalog
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("admin")
@@ -47,6 +50,7 @@ HELP = (
     "Команды:\n"
     "/prompt: текущий промпт файлом\n"
     "/rule текст: добавить правило в конец промпта\n"
+    "/catalog: состояние каталога, /catalog crawl: обновить, /find запрос: поиск\n"
     "/setprompt: заменить промпт целиком (пришлёшь текстом или файлом)\n"
     "/rollback: вернуть предыдущий промпт\n"
     "/first: показать первое сообщение, /setfirst текст: заменить\n"
@@ -62,6 +66,57 @@ async def start(m: Message):
     if not allowed(m):
         return await m.answer(f"Нет доступа. Ваш ID: {m.from_user.id}")
     await m.answer(HELP)
+
+
+_crawling = False
+
+
+async def run_crawl(notify: int | None = None):
+    global _crawling
+    if _crawling:
+        return
+    _crawling = True
+    try:
+        res = await catalog.crawl()
+        log.info("catalog crawl: %s", res)
+        if notify:
+            await bot.send_message(notify, f"Каталог обновлён: {res['products']} товаров, страниц {res['pages']}, ошибок {res['failed']}, {res['secs']} с")
+    except Exception as e:
+        log.exception("crawl failed")
+        if notify:
+            await bot.send_message(notify, f"Выгрузка каталога упала: {e}")
+    finally:
+        _crawling = False
+
+
+@router.message(Command("catalog"))
+async def cmd_catalog(m: Message, command: CommandObject):
+    if not allowed(m):
+        return
+    if command.args and command.args.strip() == "crawl":
+        asyncio.create_task(run_crawl(m.from_user.id))
+        return await m.answer("Выгружаю каталог euroled.lv, это займёт несколько минут. Напишу, когда закончу.")
+    st = catalog.stats()
+    when = time.strftime("%d.%m %H:%M", time.gmtime(st["updated"])) if st["updated"] else "никогда"
+    await m.answer(f"В каталоге {st['products']} товаров, обновлён: {when} UTC.\n/catalog crawl: обновить сейчас\n/find запрос: проверить поиск, например /find virtene 15m")
+
+
+@router.message(Command("find"))
+async def cmd_find(m: Message, command: CommandObject):
+    if not allowed(m):
+        return
+    q = (command.args or "").strip()
+    if not q:
+        return await m.answer("Пример: /find virtene 15m")
+    length = None
+    mm = re.search(r"(\d+(?:[.,]\d+)?)\s?m\b", q)
+    if mm:
+        length = float(mm.group(1).replace(",", "."))
+        q = q.replace(mm.group(0), "")
+    rows = catalog.search(q, length_m=length, length_tol=3 if length else 0, limit=8)
+    if not rows:
+        return await m.answer("Ничего не нашёл.")
+    await m.answer("\n".join(f"{r['price']:.2f} € | {r['title']} | на складе: {r['stock']}" for r in rows))
 
 
 @router.message(Command("prompt"))
@@ -293,6 +348,15 @@ async def poll_calls():
         await asyncio.sleep(POLL_SECS)
 
 
+async def daily_catalog():
+    await asyncio.sleep(60)
+    while True:
+        st = catalog.stats()
+        if not st["updated"] or time.time() - st["updated"] > 20 * 3600:
+            await run_crawl(next(iter(ALLOWED)) if ALLOWED else None)
+        await asyncio.sleep(3600)
+
+
 async def main():
     if os.environ.get("ELEVEN_WEBHOOK_SECRET"):  # optional webhook mode if HTTPS is available
         app = web.Application()
@@ -303,6 +367,7 @@ async def main():
         await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", "8080"))).start()
     else:
         asyncio.create_task(poll_calls())
+    asyncio.create_task(daily_catalog())
     await dp.start_polling(bot)
 
 
