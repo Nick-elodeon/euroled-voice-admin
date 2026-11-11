@@ -7,8 +7,8 @@ ElevenLabs stays the source of truth; the bot is a thin editor over its API, so 
 ## Run
 
 1. Set the variables from `.env.example` in the hosting platform (secrets only there, never in git).
-2. Deploy with the included `Dockerfile` (start command `python bot/main.py`, listens on `$PORT`).
-3. In ElevenLabs, set the post-call webhook to `https://<host>/elevenlabs/post-call` and copy its signing secret into `ELEVEN_WEBHOOK_SECRET`.
+2. On a VM: `sudo bash deploy/setup.sh`, fill `/etc/euroled-admin.env`, `systemctl restart euroled-admin`. Or use the `Dockerfile` on a PaaS.
+3. Post-call summaries are polled from the ElevenLabs API every minute (no open port needed). Optional webhook mode: set `ELEVEN_WEBHOOK_SECRET` and point ElevenLabs to `/elevenlabs/post-call`.
 4. Open the bot, send `/start`. An unknown user sees their Telegram ID to add to `ALLOWED_USER_IDS`.
 
 ## Commands

@@ -252,13 +252,56 @@ async def health(_):
     return web.Response(text="ok")
 
 
+# ---------------- polling (no inbound port or HTTPS needed) ----------------
+STATE_FILE = os.environ.get("STATE_FILE", "state.json")
+POLL_SECS = int(os.environ.get("POLL_SECS", "60"))
+
+
+def load_state() -> dict:
+    try:
+        return json.load(open(STATE_FILE))
+    except Exception:
+        return {}
+
+
+def save_state(st: dict):
+    os.makedirs(os.path.dirname(os.path.abspath(STATE_FILE)), exist_ok=True)
+    json.dump(st, open(STATE_FILE, "w"))
+
+
+async def poll_calls():
+    """Every POLL_SECS look for finished calls newer than the last seen one and report them."""
+    import time
+    st = load_state()
+    if "since" not in st:  # first start: do not replay history
+        st["since"] = int(time.time())
+        save_state(st)
+    while True:
+        try:
+            res = await eleven._req("GET", "/convai/conversations",
+                                    params={"agent_id": eleven.agent_id, "page_size": 20})
+            convs = [c for c in res.get("conversations", [])
+                     if c.get("start_time_unix_secs", 0) > st["since"] and c.get("status") == "done"]
+            for c in sorted(convs, key=lambda c: c["start_time_unix_secs"]):
+                full = await eleven.conversation(c["conversation_id"])
+                await handle_call(full)
+                st["since"] = c["start_time_unix_secs"]
+                save_state(st)
+        except Exception:
+            log.exception("poll failed")
+        await asyncio.sleep(POLL_SECS)
+
+
 async def main():
-    app = web.Application()
-    app.router.add_post("/elevenlabs/post-call", webhook)
-    app.router.add_get("/", health)
-    runner = web.AppRunner(app)
-    await runner.setup()
-    await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", "8080"))).start()
+    if os.environ.get("ELEVEN_WEBHOOK_SECRET"):  # optional webhook mode if HTTPS is available
+        app = web.Application()
+        app.router.add_post("/elevenlabs/post-call", webhook)
+        app.router.add_get("/", health)
+        runner = web.AppRunner(app)
+        await runner.setup()
+        await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("PORT", "8080"))).start()
+    else:
+        asyncio.create_task(poll_calls())
     await dp.start_polling(bot)
 
 
