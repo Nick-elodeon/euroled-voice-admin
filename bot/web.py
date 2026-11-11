@@ -301,7 +301,7 @@ def make_app(eleven, state: dict) -> web.Application:
                                 (x.get("shop") or "", f"{x['length_m']} м" if x["length_m"] else "", x.get("size_cm") or "", f"IP{x['ip']}" if x["ip"] else "", f"{x['watts']} Вт" if x.get("watts") else "") if v)
                 old = f"<s>{x['price_old']:.2f} €</s>" if x.get("price_old") else ""
                 items += (f"<div class=prow><div><a href='{E(x['url'])}' target=_blank rel=noopener>{E(x['title'])}</a><div>{chips}"
-                          f"<span class=chipx>{E(str(x['stock'] if x['stock'] is not None else 'нет данных'))}{' м²' if x.get('unit') == 'm2' else ''}</span></div></div><div class=price>{x['price']:.2f} €{'/м²' if x.get('unit') == 'm2' else ''}{old}</div></div>")
+                          f"<span class=chipx>{E(str(x['stock'] if x['stock'] is not None else 'нет данных'))}{' м²' if x.get('unit') == 'm2' else ''}</span></div></div><div class=price>{x['price']:.2f} €{ {'m2': '/м²', 'm': '/м'}.get(x.get('unit'), '') }{('<s>всего ' + str(x['total_eur']) + ' €</s>') if x.get('total_eur') else ''}{old}</div></div>")
             res = f"<div class=panel><h2>Нашлось: {len(rows)}</h2>{items or '<p class=sub>Ничего. Попробуйте другое слово или увеличьте цену.</p>'}</div>"
         body = (f"<div class=top><h1>Каталог</h1></div><div class=kpis><div class=kpi><b>{st['products']}</b><span>товаров в базе ({E(', '.join(f'{k} {v}' for k, v in st['per_shop'].items()) or 'пусто')})</span></div>"
                 f"<div class=kpi><b style='font-size:17px'>{when}</b><span>последнее обновление</span></div></div>"
@@ -332,10 +332,13 @@ def make_app(eleven, state: dict) -> web.Application:
                               length_tol=fl("length_tol") or 0, max_price=fl("max_price"),
                               min_ip=int(q["min_ip"]) if q.get("min_ip", "").isdigit() else None,
                               in_stock=q.get("in_stock", "1") != "0", sort=q.get("sort", "price"), shop=q.get("shop", ""),
+                              use=q.get("use", ""), christmas=q.get("christmas") == "1",
                               limit=min(int(q.get("limit", 5)), 10) if q.get("limit", "5").isdigit() else 5)
         out = [{"name": x["title"], "price_eur": x["price"], "was_eur": x["price_old"], "stock": x["stock"],
                 "length_m": x["length_m"], "ip": x["ip"], "url": x["url"], "category": x["category"],
-                "shop": x["shop"], "unit": x["unit"], "size_cm": x["size_cm"]} for x in rows]
+                "shop": x["shop"], "price_unit": {"m2": "за м²", "m": "за метр", "gab": "за штуку"}.get(x["unit"], "за штуку"),
+                "total_eur": x.get("total_eur"), "size_cm": x["size_cm"],
+                "kind": x.get("kind_ru"), "use": x.get("use"), "note": x.get("note"), "warning": x.get("warning")} for x in rows]
         return web.json_response({"count": len(out), "products": out})
 
     app.add_routes(r)

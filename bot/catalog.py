@@ -11,6 +11,8 @@ from urllib.parse import urljoin, urlparse
 import aiohttp
 from bs4 import BeautifulSoup
 
+import taxonomy
+
 log = logging.getLogger("catalog")
 SHOPS = {
     "euroled": {"base": "https://euroled.lv", "seeds": ["https://euroled.lv/lv/visas-preces"]},
@@ -105,7 +107,12 @@ def parse_listing(html: str, page_url: str, shop: str = "euroled") -> list[dict]
         category = "/".join(segs[:-1])  # without product slug
         cur_el = a.select_one(".product__price-currency")
         cur = cur_el.get_text(strip=True).lower() if cur_el else ""
-        unit = "m2" if ("m²" in cur or "m2" in cur) else "gab"
+        if "m²" in cur or "m2" in cur:
+            unit = "m2"
+        elif re.search(r"/\s?m\b", cur):
+            unit = "m"  # price per metre of cable/strip
+        else:
+            unit = "gab"
         row = {"url": url, "title": title, "category": category, "price": price,
                "price_old": old, "discount": disc, "stock": stock, "shop": shop, "unit": unit}
         row.update(parse_facts(title))
@@ -135,6 +142,19 @@ def db() -> sqlite3.Connection:
             c.execute(f"ALTER TABLE products ADD COLUMN {name} {typ}")
     c.commit()
     return c
+
+
+CRAWL_VERSION = 3  # bump when parsing changes: forces a fresh crawl on next start
+MARKER = os.path.join(os.path.dirname(DB_PATH) or ".", "crawl_done.json")
+
+
+def crawl_due(max_age_h: float = 20) -> bool:
+    import json
+    try:
+        m = json.load(open(MARKER))
+        return m.get("v") != CRAWL_VERSION or time.time() - m.get("t", 0) > max_age_h * 3600
+    except Exception:
+        return True
 
 
 PROGRESS: dict = {"running": False, "pages": 0, "products": 0, "failed": 0, "last_error": "", "last_url": "", "started": 0, "finished": 0}
@@ -231,6 +251,11 @@ async def crawl(max_pages: int = 4000, delay: float = 0.6) -> dict:
             total["products"] += len(products)
             total["pages"] += pages
             total["failed"] += blocked
+    try:
+        import json
+        json.dump({"v": CRAWL_VERSION, "t": time.time(), "products": total["products"]}, open(MARKER, "w"))
+    except Exception:
+        log.warning("cannot write crawl marker")
     PROGRESS.update(running=False, finished=time.time(), shop="", pages=total["pages"], products=total["products"], failed=total["failed"])
     return {**total, "per_shop": per_shop, "secs": round(time.time() - t0)}
 
@@ -245,7 +270,8 @@ def stats() -> dict:
 
 def search(query: str = "", category: str = "", length_m: float | None = None, length_tol: float = 0.0,
            min_length: float | None = None, max_price: float | None = None, min_ip: int | None = None,
-           in_stock: bool = True, sort: str = "price", limit: int = 5, shop: str = "") -> list[dict]:
+           in_stock: bool = True, sort: str = "price", limit: int = 5, shop: str = "",
+           use: str = "", christmas: bool = False) -> list[dict]:
     """Filter by facts; length_m + length_tol gives a range. sort: price | price_desc | length | discount."""
     where, args = ["1=1"], []
     for w in (query or "").lower().split():
@@ -266,6 +292,14 @@ def search(query: str = "", category: str = "", length_m: float | None = None, l
     if min_ip is not None:
         where.append("ip >= ?")
         args.append(min_ip)
+    if christmas:
+        where.append("(category = ? OR category LIKE ?)")
+        args += [taxonomy.CHRISTMAS, taxonomy.CHRISTMAS + "/%"]
+    if use in ("in", "out"):
+        sl = taxonomy.slugs_for_use(use)
+        where.append("(" + " OR ".join(["category = ? OR category LIKE ?"] * len(sl)) + ")")
+        for x in sl:
+            args += [x, x + "/%"]
     if shop:
         where.append("shop = ?")
         args.append(shop)
@@ -277,7 +311,14 @@ def search(query: str = "", category: str = "", length_m: float | None = None, l
     rows = c.execute(f"SELECT * FROM products WHERE {' AND '.join(where)} ORDER BY {order} LIMIT ?",
                      args + [limit]).fetchall()
     c.close()
-    return [dict(r) for r in rows]
+    out = []
+    for r in rows:
+        d = dict(r)
+        d.update(taxonomy.info(d.get("category", "")))
+        d["warning"] = "Без лампочек: лампы E27 покупаются отдельно" if "bez spuldz" in d["title"].lower() else None
+        d["total_eur"] = round(d["price"] * d["length_m"], 2) if d.get("unit") == "m" and d.get("length_m") else None
+        out.append(d)
+    return out
 
 
 if __name__ == "__main__":

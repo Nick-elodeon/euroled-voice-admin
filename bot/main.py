@@ -17,6 +17,7 @@ from aiohttp import web
 from eleven import Eleven, verify_webhook
 import catalog
 import web as webadmin
+import tools_setup
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("admin")
@@ -117,7 +118,7 @@ async def cmd_find(m: Message, command: CommandObject):
     rows = catalog.search(q, length_m=length, length_tol=3 if length else 0, limit=8)
     if not rows:
         return await m.answer("Ничего не нашёл.")
-    await m.answer("\n".join(f"{r['price']:.2f} €{'/м²' if r.get('unit') == 'm2' else ''} | {r['title']} | на складе: {r['stock']} | {r.get('shop')}" for r in rows))
+    await m.answer("\n".join(f"{r['price']:.2f} €{ {'m2': '/м²', 'm': '/м'}.get(r.get('unit'), '') }{' (всего ' + str(r['total_eur']) + ' €)' if r.get('total_eur') else ''} | {r['title']} | на складе: {r['stock']} | {r.get('shop')}" for r in rows))
 
 
 @router.message(Command("prompt"))
@@ -352,10 +353,39 @@ async def poll_calls():
 async def daily_catalog():
     await asyncio.sleep(60)
     while True:
-        st = catalog.stats()
-        if not st["updated"] or time.time() - st["updated"] > 20 * 3600:
+        if catalog.crawl_due():
             await run_crawl(next(iter(ALLOWED)) if ALLOWED else None)
         await asyncio.sleep(3600)
+
+
+async def setup_tool(st: dict, notify: int | None):
+    """Wait for the HTTPS host, then connect the catalog search tool to the voice agent."""
+    for _ in range(60):
+        try:
+            host = open("/var/lib/euroled-admin/host.txt").read().strip()
+            if host:
+                break
+        except OSError:
+            pass
+        await asyncio.sleep(10)
+    else:
+        return
+    try:
+        msg = await tools_setup.setup(eleven, host, st["tool_token"])
+    except Exception as e:
+        log.exception("tool setup failed")
+        msg = f"Не удалось подключить поиск каталога к агенту: {e}"
+    if notify:
+        await bot.send_message(notify, msg)
+
+
+@router.message(Command("tool"))
+async def cmd_tool(m: Message):
+    if not allowed(m):
+        return
+    st, _ = webadmin.ensure_secrets()
+    await m.answer("Подключаю поиск каталога к агенту…")
+    await setup_tool(st, m.from_user.id)
 
 
 async def main():
@@ -370,6 +400,7 @@ async def main():
         asyncio.create_task(poll_calls())
     asyncio.create_task(daily_catalog())
     st, new_pw = webadmin.ensure_secrets()
+    asyncio.create_task(setup_tool(st, next(iter(ALLOWED)) if ALLOWED else None))
     runner = web.AppRunner(webadmin.make_app(eleven, st))
     await runner.setup()
     await web.TCPSite(runner, "0.0.0.0", int(os.environ.get("ADMIN_PORT", "8080"))).start()
