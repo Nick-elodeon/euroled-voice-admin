@@ -7,17 +7,20 @@ SRC="${1:-$(cd "$(dirname "$0")/.." && pwd)}"
 APP=/opt/euroled-admin
 
 if command -v apt-get >/dev/null; then
-  apt-get update -y && apt-get install -y python3 python3-venv rsync
+  if ! (command -v rsync && command -v git && python3 -c "import venv, ensurepip") >/dev/null 2>&1; then
+    export DEBIAN_FRONTEND=noninteractive
+    apt-get update -y && apt-get install -y python3 python3-venv rsync git curl
+  fi
   PY=python3
 else
-  dnf install -y python3.11 rsync
+  dnf install -y python3.11 rsync git
   PY=python3.11
 fi
 
 mkdir -p "$APP" /var/lib/euroled-admin
 rsync -a --delete --exclude .git --exclude .env "$SRC"/bot "$SRC"/requirements.txt "$APP"/
-$PY -m venv "$APP/venv"
-"$APP/venv/bin/pip" install --no-cache-dir -r "$APP/requirements.txt"
+[ -x "$APP/venv/bin/python" ] || $PY -m venv "$APP/venv"
+"$APP/venv/bin/pip" install --no-cache-dir -q -r "$APP/requirements.txt"
 
 if [ ! -f /etc/euroled-admin.env ]; then
   cat > /etc/euroled-admin.env <<'EOF'
@@ -48,6 +51,24 @@ RestartSec=5
 WantedBy=multi-user.target
 EOF
 
+cat > /etc/systemd/system/euroled-sync.service <<'EOF2'
+[Unit]
+Description=EUROLED pull and deploy latest code
+[Service]
+Type=oneshot
+ExecStart=/opt/euroled-src/deploy/sync.sh
+EOF2
+cat > /etc/systemd/system/euroled-sync.timer <<'EOF2'
+[Unit]
+Description=EUROLED auto-update every minute
+[Timer]
+OnBootSec=60
+OnUnitActiveSec=60
+[Install]
+WantedBy=timers.target
+EOF2
+
 systemctl daemon-reload
 systemctl enable euroled-admin
+systemctl enable --now euroled-sync.timer
 echo "Installed. Fill /etc/euroled-admin.env, then: systemctl restart euroled-admin && journalctl -u euroled-admin -f"
