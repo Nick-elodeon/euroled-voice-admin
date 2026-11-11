@@ -35,7 +35,7 @@ CREATE TABLE IF NOT EXISTS products(
   url TEXT PRIMARY KEY, title TEXT, category TEXT, price REAL, price_old REAL, discount INTEGER,
   stock INTEGER, length_m REAL, ip INTEGER, watts REAL, leds INTEGER, kelvin INTEGER,
   color TEXT, battery INTEGER, updated REAL, shop TEXT DEFAULT 'euroled', unit TEXT, size_cm TEXT,
-  total REAL, total_src TEXT, piece_m2 REAL, pack_pieces INTEGER, pack_m2 REAL);
+  total REAL, total_src TEXT, piece_m2 REAL, pack_pieces INTEGER, pack_m2 REAL, slug TEXT, cats TEXT);
 CREATE INDEX IF NOT EXISTS i_cat ON products(category);
 """
 
@@ -110,7 +110,8 @@ def parse_listing(html: str, page_url: str, shop: str = "euroled") -> list[dict]
         else:
             unit = "gab"
         row = {"url": url, "title": title, "category": category, "price": price,
-               "price_old": None, "discount": disc, "stock": stock, "shop": shop, "unit": unit}
+               "price_old": None, "discount": disc, "stock": stock, "shop": shop, "unit": unit,
+               "slug": urlparse(url).path.rstrip("/").rsplit("/", 1)[-1]}
         row.update(parse_facts(title))
         out.append(row)
     return out
@@ -134,14 +135,19 @@ def db() -> sqlite3.Connection:
     c.executescript(SCHEMA)
     cols = {r[1] for r in c.execute("PRAGMA table_info(products)")}
     for name, typ in (("shop", "TEXT DEFAULT 'euroled'"), ("unit", "TEXT"), ("size_cm", "TEXT"), ("total", "REAL"),
-                      ("total_src", "TEXT"), ("piece_m2", "REAL"), ("pack_pieces", "INTEGER"), ("pack_m2", "REAL")):
+                      ("total_src", "TEXT"), ("piece_m2", "REAL"), ("pack_pieces", "INTEGER"), ("pack_m2", "REAL"),
+                      ("slug", "TEXT"), ("cats", "TEXT")):
         if name not in cols:
             c.execute(f"ALTER TABLE products ADD COLUMN {name} {typ}")
+    for (u,) in c.execute("SELECT url FROM products WHERE slug IS NULL").fetchall():
+        c.execute("UPDATE products SET slug = ? WHERE url = ?", (u.rstrip("/").rsplit("/", 1)[-1], u))
+    c.execute("UPDATE products SET cats = category WHERE cats IS NULL")
+    c.execute("CREATE INDEX IF NOT EXISTS i_slug ON products(shop, slug)")
     c.commit()
     return c
 
 
-CRAWL_VERSION = 4  # bump when parsing changes: forces a fresh crawl on next start
+CRAWL_VERSION = 5  # bump when parsing changes: forces a fresh crawl on next start
 MARKER = os.path.join(os.path.dirname(DB_PATH) or ".", "crawl_done.json")
 
 
@@ -162,15 +168,21 @@ def _save(rows, now):
     with c:
         for r in rows:
             r = dict(r, updated=now)
+            if c.execute("SELECT 1 FROM products WHERE shop = ? AND slug = ? AND url != ? AND updated = ?",
+                         (r["shop"], r["slug"], r["url"], now)).fetchone():
+                c.execute("UPDATE products SET cats = cats || '|' || ? WHERE shop = ? AND slug = ? AND updated = ? "
+                          "AND instr('|' || cats || '|', '|' || ? || '|') = 0",
+                          (r["category"], r["shop"], r["slug"], now, r["category"]))
+                continue  # same product listed under another category: keep one row
             c.execute(
                 "INSERT INTO products(url,title,category,price,price_old,discount,stock,"
-                "length_m,ip,watts,leds,kelvin,color,battery,updated,shop,unit,size_cm) VALUES(:url,:title,:category,:price,"
-                ":price_old,:discount,:stock,:length_m,:ip,:watts,:leds,:kelvin,:color,:battery,:updated,:shop,:unit,:size_cm) "
+                "length_m,ip,watts,leds,kelvin,color,battery,updated,shop,unit,size_cm,slug,cats) VALUES(:url,:title,:category,:price,"
+                ":price_old,:discount,:stock,:length_m,:ip,:watts,:leds,:kelvin,:color,:battery,:updated,:shop,:unit,:size_cm,:slug,:category) "
                 "ON CONFLICT(url) DO UPDATE SET title=excluded.title, category=excluded.category, price_old=NULL, "
                 "discount=excluded.discount, stock=excluded.stock, length_m=excluded.length_m, ip=excluded.ip, "
                 "watts=excluded.watts, leds=excluded.leds, kelvin=excluded.kelvin, color=excluded.color, "
                 "battery=excluded.battery, updated=excluded.updated, shop=excluded.shop, unit=excluded.unit, "
-                "size_cm=excluded.size_cm, "
+                "size_cm=excluded.size_cm, slug=excluded.slug, cats=CASE WHEN products.updated = excluded.updated THEN products.cats ELSE excluded.category END, "
                 "total=CASE WHEN products.price = excluded.price AND products.length_m IS excluded.length_m THEN products.total ELSE NULL END, "
                 "total_src=CASE WHEN products.price = excluded.price AND products.length_m IS excluded.length_m THEN products.total_src ELSE NULL END, "
                 "price=excluded.price", r)
@@ -267,6 +279,7 @@ async def crawl(max_pages: int = 4000, delay: float = 0.6) -> dict:
             PROGRESS["shop"] = shop
             seen_pages: set[str] = set()
             products: dict[str, dict] = {}
+            slugs: set[str] = set()
             queue = list(cfg["seeds"])
             pages = blocked = 0
             while queue and pages < max_pages:
@@ -285,6 +298,7 @@ async def crawl(max_pages: int = 4000, delay: float = 0.6) -> dict:
                 fresh = [r for r in rows if r["url"] not in products]
                 for r in rows:
                     products[r["url"]] = r
+                    slugs.add(r["slug"])
                 if rows:
                     _save(rows, t0)
                     n = 2
@@ -299,13 +313,14 @@ async def crawl(max_pages: int = 4000, delay: float = 0.6) -> dict:
                             break
                         for r in more:
                             products[r["url"]] = r
+                            slugs.add(r["slug"])
                         _save(more, t0)
-                        PROGRESS.update(pages=total["pages"] + pages, products=total["products"] + len(products))
+                        PROGRESS.update(pages=total["pages"] + pages, products=total["products"] + len(slugs))
                         n += 1
                 for link in category_links(html, url, shop):
                     if link not in seen_pages and link not in products:
                         queue.append(link)
-                PROGRESS.update(pages=total["pages"] + pages, products=total["products"] + len(products))
+                PROGRESS.update(pages=total["pages"] + pages, products=total["products"] + len(slugs))
                 await asyncio.sleep(delay)
             if products:
                 c = db()
@@ -316,8 +331,8 @@ async def crawl(max_pages: int = 4000, delay: float = 0.6) -> dict:
             en = await enrich(s, shop)
             checks[shop] = en["check"]
             PROGRESS["phase"] = ""
-            per_shop[shop] = len(products)
-            total["products"] += len(products)
+            per_shop[shop] = len(slugs)
+            total["products"] += len(slugs)
             total["pages"] += pages
             total["failed"] += blocked
     try:
@@ -361,10 +376,10 @@ def search(query: str = "", category: str = "", length_m: float | None = None, l
     """Filter by facts; length_m + length_tol gives a range. sort: price | price_desc | length | discount."""
     where, args = ["1=1"], []
     for w in (query or "").lower().split():
-        where.append("(lower(title) LIKE ? OR category LIKE ?)")
+        where.append("(lower(title) LIKE ? OR cats LIKE ?)")
         args += [f"%{w}%", f"%{w}%"]
     if category:
-        where.append("category LIKE ?")
+        where.append("cats LIKE ?")
         args.append(f"%{category}%")
     if length_m is not None:
         where.append("length_m BETWEEN ? AND ?")
@@ -379,13 +394,13 @@ def search(query: str = "", category: str = "", length_m: float | None = None, l
         where.append("ip >= ?")
         args.append(min_ip)
     if christmas:
-        where.append("(category = ? OR category LIKE ?)")
-        args += [taxonomy.CHRISTMAS, taxonomy.CHRISTMAS + "/%"]
+        where.append("(('|' || cats || '|') LIKE ? OR ('|' || cats) LIKE ?)")
+        args += [f"%|{taxonomy.CHRISTMAS}|%", f"%|{taxonomy.CHRISTMAS}/%"]
     if use in ("in", "out"):
         sl = taxonomy.slugs_for_use(use)
-        where.append("(" + " OR ".join(["category = ? OR category LIKE ?"] * len(sl)) + ")")
+        where.append("(" + " OR ".join(["('|' || cats || '|') LIKE ? OR ('|' || cats) LIKE ?"] * len(sl)) + ")")
         for x in sl:
-            args += [x, x + "/%"]
+            args += [f"%|{x}|%", f"%|{x}/%"]
     if shop:
         where.append("shop = ?")
         args.append(shop)
