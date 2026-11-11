@@ -143,12 +143,13 @@ FONTS = ("<link rel=preconnect href='https://fonts.googleapis.com'><link rel=pre
          "<link rel=stylesheet href='https://fonts.googleapis.com/css2?family=Onest:wght@400;500;600&family=Unbounded:wght@500;600&display=swap'>")
 
 ICONS = {
+    "leads": "<path d='M4 5h16v11H8l-4 4z'/><path d='M8 9h8M8 12h5'/>",
     "calls": "<path d='M5 4h4l2 5-2.5 1.5a11 11 0 0 0 5 5L15 13l5 2v4a2 2 0 0 1-2 2A16 16 0 0 1 3 6a2 2 0 0 1 2-2z'/>",
     "catalog": "<path d='M4 7l8-4 8 4-8 4-8-4zM4 12l8 4 8-4M4 17l8 4 8-4'/>",
     "voice": "<rect x='9' y='3' width='6' height='11' rx='3'/><path d='M5 11a7 7 0 0 0 14 0M12 18v3'/>",
     "prompt": "<path d='M5 4h14v16H5zM9 9h6M9 13h6M9 17h3'/>",
 }
-NAV = [("/", "Звонки", "calls"), ("/catalog", "Каталог", "catalog"), ("/voice", "Голос", "voice"), ("/prompt", "Промпт", "prompt")]
+NAV = [("/", "Звонки", "calls"), ("/leads", "Заявки", "leads"), ("/catalog", "Каталог", "catalog"), ("/voice", "Голос", "voice"), ("/prompt", "Промпт", "prompt")]
 
 
 def page(title: str, body: str, active: str = "/", nav: bool = True):

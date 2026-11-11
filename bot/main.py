@@ -18,6 +18,7 @@ from eleven import Eleven, verify_webhook
 import catalog
 import web as webadmin
 import tools_setup
+import leads
 
 logging.basicConfig(level=logging.INFO)
 log = logging.getLogger("admin")
@@ -288,13 +289,10 @@ async def handle_call(payload: dict):
     try:
         d = payload.get("data", payload)
         conv_id = d.get("conversation_id", "")
-        analysis = d.get("analysis", {}) or {}
-        summary = analysis.get("transcript_summary") or "(без саммари)"
-        meta = d.get("metadata", {}) or {}
-        dur = meta.get("call_duration_secs", "?")
-        collected = analysis.get("data_collection_results") or {}
-        contacts = "\n".join(f"• {k}: {v.get('value')}" for k, v in collected.items() if v.get("value"))
-        text = f"📞 Звонок {dur} с\n\n{summary}" + (f"\n\n{contacts}" if contacts else "")
+        lead = leads.save(d)
+        if lead is None:
+            return  # already reported
+        text = leads.card(lead)
         kb = InlineKeyboardMarkup(inline_keyboard=[[
             InlineKeyboardButton(text="⚠ Ошибка бота", callback_data=f"err:{conv_id}")]])
         for uid in ALLOWED:

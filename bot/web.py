@@ -12,6 +12,7 @@ import time
 from aiohttp import web
 
 import catalog
+import leads
 import ui
 from ui import E, page
 
@@ -331,6 +332,57 @@ def make_app(eleven, state: dict) -> web.Application:
             asyncio.create_task(catalog.crawl())
             catalog.PROGRESS["running"] = True
         raise web.HTTPFound("/catalog")
+
+    @r.get("/leads")
+    async def leads_page(request):
+        import json as _json
+        only = request.query.get("all") != "1"
+        rows = leads.recent(100, only_leads=only)
+        items = ""
+        for x in rows:
+            f = _json.loads(x["fields"] or "{}")
+            who = " · ".join(v for v in (x["name"], x["contact_phone"] or x["caller"]) if v) or "без имени"
+            chips = "".join(f"<span class=chipx>{E(str(f[k]))}</span>" for k in ("customer_type", "urgency", "callback_time") if k in f)
+            mail = "<span class=chipx>письмо ушло</span>" if x["emailed"] else ("<span class=chipx>письмо в очереди</span>" if x["is_lead"] else "")
+            items += (f"<div class=prow><div><a href='/call/{E(x['conv_id'])}'>{E(x['title'] or x['summary'][:80] or 'Звонок')}</a>"
+                      f"<div class=sub>{E(who)} · {ui.fmt_dt(x['ts'])}</div><div>{chips}{mail}</div>"
+                      f"<div class=sub>{E(str(f.get('products_proposed') or f.get('room_and_task') or ''))}</div></div></div>")
+        sw = ("<a href='/leads?all=1'>Показать и звонки без заявки</a>" if only else "<a href='/leads'>Только заявки</a>")
+        body = (f"<div class=top><h1>Заявки</h1></div><div class=panel>"
+                f"{items or '<p class=sub>Заявок пока нет. Они появятся после первого звонка с контактами.</p>'}</div><p class=sub>{sw}</p>")
+        return page("Заявки", body, "/leads")
+
+    def _tool_auth(request):
+        if not hmac.compare_digest(request.headers.get("X-Tool-Token", ""), state["tool_token"]):
+            raise web.HTTPUnauthorized()
+
+    @r.get("/api/leads")
+    async def api_leads(request):
+        """New leads that still need an e-mail. Used by the scheduled mailer."""
+        _tool_auth(request)
+        out = []
+        for x in leads.unsent(20):
+            out.append({"id": x["conv_id"], "when": ui.fmt_dt(x["ts"]), "name": x["name"], "phone": x["contact_phone"] or x["caller"],
+                        "title": x["title"], "summary": x["summary"], "fields": __import__("json").loads(x["fields"] or "{}"),
+                        "call_url": f"https://92-5-6-32.sslip.io/call/{x['conv_id']}"})
+        return web.json_response({"count": len(out), "leads": out})
+
+    @r.post("/api/leads/mark")
+    async def api_leads_mark(request):
+        _tool_auth(request)
+        ids = (await request.json()).get("ids", [])
+        return web.json_response({"marked": leads.mark_sent([str(i) for i in ids])})
+
+    @r.post("/api/init")
+    async def api_init(request):
+        """ElevenLabs conversation-initiation webhook: tell the agent who is calling."""
+        _tool_auth(request)
+        try:
+            body = await request.json()
+        except Exception:
+            body = {}
+        mem = leads.memory(body.get("caller_id"))
+        return web.json_response({"type": "conversation_initiation_client_data", "dynamic_variables": mem})
 
     @r.get("/api/search")
     async def api_search(request):
