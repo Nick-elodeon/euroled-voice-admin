@@ -8,13 +8,15 @@ APP=/opt/euroled-admin
 
 if command -v apt-get >/dev/null; then
   apt-get update -y && apt-get install -y python3 python3-venv rsync
+  PY=python3
 else
-  dnf install -y python3 rsync
+  dnf install -y python3.11 rsync
+  PY=python3.11
 fi
 
 mkdir -p "$APP" /var/lib/euroled-admin
 rsync -a --delete --exclude .git --exclude .env "$SRC"/bot "$SRC"/requirements.txt "$APP"/
-python3 -m venv "$APP/venv"
+$PY -m venv "$APP/venv"
 "$APP/venv/bin/pip" install --no-cache-dir -r "$APP/requirements.txt"
 
 if [ ! -f /etc/euroled-admin.env ]; then

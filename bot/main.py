@@ -1,4 +1,5 @@
 """EUROLED voice agent admin: Telegram bot + post-call webhook in one process."""
+from __future__ import annotations
 import asyncio
 import io
 import json

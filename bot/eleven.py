@@ -1,4 +1,5 @@
 """Thin async client for the ElevenLabs Agents REST API (source of truth for prompt and KB)."""
+from __future__ import annotations
 import hashlib
 import hmac
 import time
