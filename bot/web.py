@@ -455,6 +455,8 @@ def make_app(eleven, state: dict) -> web.Application:
                               use=q.get("use", ""), christmas=q.get("christmas") == "1",
                               limit=min(int(q.get("limit", 5)), 10) if q.get("limit", "5").isdigit() else 5)
         area = fl("area_m2")
+        qty = int(fl("qty") or 1)
+        qty = max(1, min(qty, 1000))
         live = await catalog.verify_live(rows[:3])
         try:
             catalog.record_hits([r["url"] for r in rows[:3]])
@@ -470,6 +472,9 @@ def make_app(eleven, state: dict) -> web.Application:
             tot, box, plan = x.get("total_eur"), x.get("box_price_eur"), None
             if u == "m" and tot:
                 say = f"{tot:.2f} € за всю гирлянду/ленту {x['length_m']:g} м ({p:.2f} € за метр)"
+                if qty > 1:
+                    tot = round(tot * qty, 2)
+                    say += f". {qty} шт. итого {tot:.2f} €"
             elif u == "m" and x.get("length_m"):
                 say = (f"{p:.2f} € за метр; точный итог на длину {x['length_m']:g} м не подтверждён, "
                        f"скажи «примерно {p * x['length_m']:.0f} €, точную сумму подтвердит менеджер»")
@@ -486,7 +491,8 @@ def make_app(eleven, state: dict) -> web.Application:
             elif u == "m2":
                 say = f"{p:.2f} € за м². Размер коробки не подтверждён: итог на объём посчитает менеджер"
             else:
-                say = f"{p:.2f} € за штуку"
+                tot = round(p * qty, 2)
+                say = f"{p:.2f} € за штуку" + (f". {qty} шт. итого {tot:.2f} €" if qty > 1 else ", итого за заказ столько же")
             lv = live.get(x["url"])
             checked = bool(lv and lv["ok"])
             if lv is not None and not checked:
@@ -498,7 +504,8 @@ def make_app(eleven, state: dict) -> web.Application:
                         "order_total_eur": tot,
                         "box_price_eur": box, "box_m2": x.get("pack_m2"), "pieces_per_box": x.get("pack_pieces"),
                         "boxes_needed": plan["boxes"] if plan else None,
-                        "total_is_confirmed_by_site": bool(tot) and (u != "m" or x.get("total_src") == "site"),
+                        "quantity": qty,
+                        "total_is_confirmed_by_site": bool(tot) and (u == "m2" and bool(plan) or (u == "m" and x.get("total_src") == "site") or u not in ("m", "m2")),
                         "in_stock": x["stock"], "length_m": x["length_m"], "ip": x["ip"], "size_cm": x["size_cm"],
                         "shop": x["shop"], "url": x["url"], "kind": x.get("kind_ru"), "use": x.get("use"),
                         "note": x.get("note"), "warning": x.get("warning")})
