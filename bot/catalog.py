@@ -506,7 +506,7 @@ def live_price(html: str) -> float | None:
     return _num(m.group(1)) if m else None
 
 
-async def verify_live(rows: list[dict], timeout: float = 3.0) -> dict[str, dict]:
+async def verify_live(rows: list[dict], timeout: float = 1.5) -> dict[str, dict]:
     """Open each product page in parallel and compare with the stored price.
     Returns {url: {"ok": bool, "live": float|None, "changed": bool}}. A page that cannot be read gives ok=False
     (the caller then tells the client the manager confirms the price). A changed price is written to the database."""

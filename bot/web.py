@@ -455,7 +455,7 @@ def make_app(eleven, state: dict) -> web.Application:
                               use=q.get("use", ""), christmas=q.get("christmas") == "1",
                               limit=min(int(q.get("limit", 5)), 10) if q.get("limit", "5").isdigit() else 5)
         area = fl("area_m2")
-        live = await catalog.verify_live(rows[:5])
+        live = await catalog.verify_live(rows[:3])
         for x in rows:  # prices may have changed on the site since the last crawl: recompute what depends on them
             if x["url"] in live and live[x["url"]]["changed"]:
                 x["total_eur"] = x["total"] if x.get("unit") == "m" and x.get("total_src") == "site" else None
