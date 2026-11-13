@@ -324,6 +324,10 @@ def make_app(eleven, state: dict) -> web.Application:
         st = catalog.stats()
         when = ui.fmt_dt(int(st["updated"])) if st["updated"] else "ни разу"
         pr = catalog.PROGRESS
+        hl = catalog.health()
+        hl_html = ("<div class=err><b>Синхронизация под вопросом:</b> " + E("; ".join(hl["problems"])) + "</div>") if hl["problems"] else (
+            f"<div class=panel><span class=sub>Синхронизация в порядке: итоговые цены подтверждены у {hl['m_ok']} из {hl['m_len']}, "
+            f"коробки известны у {hl['m2_ok']} из {hl['m2']}. Цена сверяется с сайтом в момент разговора.</span></div>")
         if pr["running"]:
             sh = f" ({E(pr.get('shop', ''))})" if pr.get("shop") else ""
             status = f"<div class=panel><b>Сбор идёт{sh}{(': ' + pr['phase']) if pr.get('phase') else ''}.</b> Страниц: {pr['pages']}, товаров: {pr['products']}, ошибок: {pr['failed']}.<p class=sub>Сейчас: {E(pr['last_url'])}</p>" + (f"<p class=sub>Последняя ошибка: {E(pr['last_error'])}</p>" if pr["last_error"] else "") + "<p class=sub>Обновите страницу через минуту.</p></div>"
@@ -371,7 +375,7 @@ def make_app(eleven, state: dict) -> web.Application:
             res = f"<div class=panel><h2>Нашлось: {len(rows)}</h2>{items or '<p class=sub>Ничего. Попробуйте другое слово или увеличьте цену.</p>'}</div>"
         body = (f"<div class=top><h1>Каталог</h1></div><div class=kpis><div class=kpi><b>{st['products']}</b><span>товаров в базе ({E(', '.join(f'{k} {v}' for k, v in st['per_shop'].items()) or 'пусто')})</span></div>"
                 f"<div class=kpi><b style='font-size:17px'>{when}</b><span>последнее обновление</span></div></div>"
-                f"{status}<div class=panel>{form}</div>{res}<p class=sub>Обновить каталог вручную: /catalog crawl в Telegram.</p>")
+                f"{hl_html}{status}<div class=panel>{form}</div>{res}<p class=sub>Обновить каталог вручную: /catalog crawl в Telegram.</p>")
         return page("Каталог", body, "/catalog")
 
     @r.post("/catalog/crawl")
@@ -451,6 +455,11 @@ def make_app(eleven, state: dict) -> web.Application:
                               use=q.get("use", ""), christmas=q.get("christmas") == "1",
                               limit=min(int(q.get("limit", 5)), 10) if q.get("limit", "5").isdigit() else 5)
         area = fl("area_m2")
+        live = await catalog.verify_live(rows[:5])
+        for x in rows:  # prices may have changed on the site since the last crawl: recompute what depends on them
+            if x["url"] in live and live[x["url"]]["changed"]:
+                x["total_eur"] = x["total"] if x.get("unit") == "m" and x.get("total_src") == "site" else None
+                x["box_price_eur"] = round(x["price"] * x["pack_m2"], 2) if x.get("unit") == "m2" and x.get("pack_m2") else None
         out = []
         for x in rows:
             u, p = x["unit"], x["price"]
@@ -474,7 +483,12 @@ def make_app(eleven, state: dict) -> web.Application:
                 say = f"{p:.2f} € за м². Размер коробки не подтверждён: итог на объём посчитает менеджер"
             else:
                 say = f"{p:.2f} € за штуку"
-            out.append({"name": x["title"], "price_to_say": say,
+            lv = live.get(x["url"])
+            checked = bool(lv and lv["ok"])
+            if lv is not None and not checked:
+                say += ". Страницу товара сейчас проверить не удалось: скажи, что актуальную цену подтвердит менеджер"
+            out.append({"name": x["title"], "price_to_say": say, "price_checked_live": checked if lv is not None else None,
+                        "price_changed_just_now": bool(lv and lv["changed"]),
                         "unit_price_eur": p,
                         "unit_price_per": {"m2": "за м²", "m": "за метр", "gab": "за штуку"}.get(u, "за штуку"),
                         "order_total_eur": tot,

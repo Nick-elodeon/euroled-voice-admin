@@ -348,11 +348,35 @@ async def poll_calls():
         await asyncio.sleep(POLL_SECS)
 
 
+_last_alert = {"key": "", "t": 0.0}
+
+
+async def watchdog():
+    """Tell the owner when catalog synchronisation looks broken (once per distinct problem, repeated every 12 h)."""
+    if _crawling:
+        return
+    h = catalog.health()
+    key = "|".join(h["problems"])
+    if not key:
+        _last_alert.update(key="", t=0.0)
+        return
+    if key == _last_alert["key"] and time.time() - _last_alert["t"] < 12 * 3600:
+        return
+    _last_alert.update(key=key, t=time.time())
+    if ALLOWED:
+        await bot.send_message(next(iter(ALLOWED)), "Каталог: проблема с синхронизацией.\n" + "\n".join("• " + p for p in h["problems"])
+                               + "\nБот при этом просит клиента уточнить цену у менеджера, если не может сверить её с сайтом. Обновить: /catalog crawl")
+
+
 async def daily_catalog():
     await asyncio.sleep(60)
     while True:
         if catalog.crawl_due():
             await run_crawl(next(iter(ALLOWED)) if ALLOWED else None)
+        try:
+            await watchdog()
+        except Exception:
+            log.exception("watchdog failed")
         await asyncio.sleep(3600)
 
 

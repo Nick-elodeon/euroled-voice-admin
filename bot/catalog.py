@@ -337,7 +337,11 @@ async def crawl(max_pages: int = 4000, delay: float = 0.6) -> dict:
             total["failed"] += blocked
     try:
         import json
-        json.dump({"v": CRAWL_VERSION, "t": time.time(), "products": total["products"]}, open(MARKER, "w"))
+        try:
+            prev = json.load(open(MARKER)).get("products")
+        except Exception:
+            prev = None
+        json.dump({"v": CRAWL_VERSION, "t": time.time(), "products": total["products"], "prev_products": prev}, open(MARKER, "w"))
     except Exception:
         log.warning("cannot write crawl marker")
     PROGRESS.update(running=False, finished=time.time(), shop="", pages=total["pages"], products=total["products"], failed=total["failed"])
@@ -482,3 +486,104 @@ def search(query: str = "", category: str = "", length_m: float | None = None, l
 if __name__ == "__main__":
     logging.basicConfig(level=logging.INFO)
     print(asyncio.run(crawl()))
+
+
+# ---------- live price check (before the bot names a price) and sync health ----------
+_LIVE: dict[str, tuple[float, dict]] = {}   # url -> (checked_at, result)
+LIVE_TTL = 120.0
+
+
+def live_price(html: str) -> float | None:
+    """The price the product page shows right now (the one the shop charges)."""
+    soup = BeautifulSoup(html, "html.parser")
+    blk = soup.select_one(".card__price")
+    el = blk.select_one(".card__pice-sale-value") if blk else None
+    if el:
+        m = re.search(r"\d+(?:[.,]\d+)?", el.get_text(" ", strip=True))
+        if m:
+            return _num(m.group(0))
+    m = re.search(r'card__pice-sale-value[^>]*>\s*(\d+(?:[.,]\d+)?)', html)
+    return _num(m.group(1)) if m else None
+
+
+async def verify_live(rows: list[dict], timeout: float = 3.0) -> dict[str, dict]:
+    """Open each product page in parallel and compare with the stored price.
+    Returns {url: {"ok": bool, "live": float|None, "changed": bool}}. A page that cannot be read gives ok=False
+    (the caller then tells the client the manager confirms the price). A changed price is written to the database."""
+    now = time.time()
+    out: dict[str, dict] = {}
+
+    async def one(s: aiohttp.ClientSession, r: dict):
+        url = r["url"]
+        hit = _LIVE.get(url)
+        if hit and now - hit[0] < LIVE_TTL:
+            out[url] = hit[1]
+            return
+        res = {"ok": False, "live": None, "changed": False}
+        try:
+            async with s.get(url, timeout=aiohttp.ClientTimeout(total=timeout)) as resp:
+                if resp.status == 200:
+                    live = live_price(await resp.text())
+                    if live is not None and live > 0:
+                        res["live"], res["ok"] = live, True
+                        unit, length = r.get("unit"), r.get("length_m")
+                        if unit == "m" and length:
+                            stored = r.get("total") if r.get("total_src") == "site" else None
+                            new_total, new_price = round(live, 2), round(live / length, 2)
+                            if stored is None or abs(stored - live) > 0.005:
+                                res["changed"] = True
+                                _store(url, price=new_price, total=new_total, total_src="site")
+                                r.update(price=new_price, total=new_total, total_src="site")
+                        else:
+                            if abs(r["price"] - live) > 0.005:
+                                res["changed"] = True
+                                _store(url, price=round(live, 2))
+                                r["price"] = round(live, 2)
+        except Exception as e:
+            log.info("live check failed %s: %s", url, e)
+        _LIVE[url] = (time.time(), res)
+        out[url] = res
+
+    async with aiohttp.ClientSession(headers=HEADERS) as s:
+        await asyncio.gather(*(one(s, r) for r in rows))
+    if len(_LIVE) > 2000:
+        _LIVE.clear()
+    return out
+
+
+def _store(url: str, **kv) -> None:
+    c = db()
+    with c:
+        c.execute(f"UPDATE products SET {', '.join(f'{k} = ?' for k in kv)} WHERE url = ?", [*kv.values(), url])
+    c.close()
+
+
+def health() -> dict:
+    """Is the synchronisation with the shops healthy? Used by the watchdog and the admin page."""
+    import json
+    c = db()
+    q = lambda sql: c.execute(sql).fetchone()[0]  # noqa: E731
+    n = q("SELECT COUNT(*) FROM products")
+    m_len = q("SELECT COUNT(*) FROM products WHERE unit='m' AND length_m IS NOT NULL")
+    m_ok = q("SELECT COUNT(*) FROM products WHERE unit='m' AND length_m IS NOT NULL AND total_src='site'")
+    m2 = q("SELECT COUNT(*) FROM products WHERE unit='m2'")
+    m2_ok = q("SELECT COUNT(*) FROM products WHERE unit='m2' AND pack_m2 IS NOT NULL")
+    last = q("SELECT COALESCE(MAX(updated), 0) FROM products")
+    c.close()
+    try:
+        prev = json.load(open(MARKER)).get("prev_products")
+    except Exception:
+        prev = None
+    age_h = (time.time() - last) / 3600 if last else None
+    problems = []
+    if age_h is None or age_h > 30:
+        problems.append(f"каталог не обновлялся {'ни разу' if age_h is None else f'{age_h:.0f} ч'}")
+    if m_len and m_ok / m_len < 0.8:
+        problems.append(f"итоговая цена подтверждена только у {m_ok} из {m_len} товаров с длиной")
+    if m2 and m2_ok / m2 < 0.8:
+        problems.append(f"размер коробки известен только у {m2_ok} из {m2} плиток")
+    if prev and n < 0.8 * prev:
+        problems.append(f"товаров стало {n} вместо {prev}")
+    if n < 100:
+        problems.append(f"в каталоге всего {n} товаров")
+    return {"products": n, "age_h": age_h, "m_len": m_len, "m_ok": m_ok, "m2": m2, "m2_ok": m2_ok, "problems": problems}
