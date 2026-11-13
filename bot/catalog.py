@@ -551,6 +551,42 @@ async def verify_live(rows: list[dict], timeout: float = 1.5) -> dict[str, dict]
     return out
 
 
+def record_hits(urls: list[str]) -> None:
+    """Count which products clients actually get offered: the hot list for the frequent refresh."""
+    if not urls:
+        return
+    c = db()
+    with c:
+        c.execute("CREATE TABLE IF NOT EXISTS hits(url TEXT PRIMARY KEY, n INTEGER, last REAL)")
+        now = time.time()
+        for u in urls:
+            c.execute("INSERT INTO hits(url, n, last) VALUES(?, 1, ?) "
+                      "ON CONFLICT(url) DO UPDATE SET n = n + 1, last = excluded.last", (u, now))
+    c.close()
+
+
+async def refresh_hot(limit: int = 40, batch: int = 5) -> dict:
+    """Re-read the product pages most often offered to clients (last 30 days); fixes drifted prices between daily crawls."""
+    c = db()
+    try:
+        rows = [dict(r) for r in c.execute(
+            "SELECT p.* FROM products p JOIN hits h ON h.url = p.url WHERE h.last > ? ORDER BY h.n DESC LIMIT ?",
+            (time.time() - 30 * 86400, limit))]
+    except sqlite3.OperationalError:  # no hits yet
+        rows = []
+    c.close()
+    changed = failed = 0
+    for i in range(0, len(rows), batch):
+        part = rows[i:i + batch]
+        for r in part:
+            _LIVE.pop(r["url"], None)
+        res = await verify_live(part, timeout=10.0)
+        changed += sum(1 for v in res.values() if v["changed"])
+        failed += sum(1 for v in res.values() if not v["ok"])
+        await asyncio.sleep(1)
+    return {"checked": len(rows), "changed": changed, "failed": failed}
+
+
 def _store(url: str, **kv) -> None:
     c = db()
     with c:

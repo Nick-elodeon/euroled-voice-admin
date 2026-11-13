@@ -456,6 +456,10 @@ def make_app(eleven, state: dict) -> web.Application:
                               limit=min(int(q.get("limit", 5)), 10) if q.get("limit", "5").isdigit() else 5)
         area = fl("area_m2")
         live = await catalog.verify_live(rows[:3])
+        try:
+            catalog.record_hits([r["url"] for r in rows[:3]])
+        except Exception:
+            log.exception("record_hits failed")
         for x in rows:  # prices may have changed on the site since the last crawl: recompute what depends on them
             if x["url"] in live and live[x["url"]]["changed"]:
                 x["total_eur"] = x["total"] if x.get("unit") == "m" and x.get("total_src") == "site" else None

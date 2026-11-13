@@ -370,9 +370,18 @@ async def watchdog():
 
 async def daily_catalog():
     await asyncio.sleep(60)
+    last_hot = 0.0
     while True:
         if catalog.crawl_due():
             await run_crawl(next(iter(ALLOWED)) if ALLOWED else None)
+        elif time.time() - last_hot > 3 * 3600:  # hot products: every 3 h between the daily crawls
+            last_hot = time.time()
+            try:
+                r = await catalog.refresh_hot()
+                if r["changed"]:
+                    log.info("hot refresh: %s", r)
+            except Exception:
+                log.exception("hot refresh failed")
         try:
             await watchdog()
         except Exception:
