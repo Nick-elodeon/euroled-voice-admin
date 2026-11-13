@@ -189,6 +189,51 @@ def _save(rows, now):
     c.close()
 
 
+def _tkey(title: str) -> str:
+    return re.sub(r"[^0-9a-zā-žа-я]+", "", (title or "").lower())
+
+
+def dedupe() -> int:
+    """Final guard against the same product twice: same shop + slug, or same shop + identical title.
+    Keeps the row with the most data (confirmed total / pack size), merges categories into `cats`."""
+    c = db()
+    rows = [dict(r) for r in c.execute("SELECT * FROM products")]
+    groups: dict[tuple, list[dict]] = {}
+    for r in rows:
+        for key in (("s", r["shop"], r.get("slug") or r["url"].split("?")[0].rstrip("/")),
+                    ("t", r["shop"], _tkey(r["title"]))):
+            groups.setdefault(key, []).append(r)
+    gone: set[str] = set()
+    cats_of = {r["url"]: (r.get("cats") or r.get("category") or "") for r in rows}
+    with c:
+        for g in groups.values():
+            g = [r for r in g if r["url"] not in gone]
+            if len(g) < 2:
+                continue
+            g.sort(key=lambda r: (r.get("total_src") == "site", r.get("pack_m2") is not None, r.get("updated") or 0), reverse=True)
+            keep, rest = g[0], g[1:]
+            cats = []
+            for r in g:
+                cats += cats_of[r["url"]].split("|")
+            merged = "|".join(dict.fromkeys(x for x in cats if x))
+            cats_of[keep["url"]] = merged
+            c.execute("UPDATE products SET cats = ? WHERE url = ?", (merged, keep["url"]))
+            for r in rest:
+                c.execute("DELETE FROM products WHERE url = ?", (r["url"],))
+                gone.add(r["url"])
+    c.close()
+    if gone:
+        log.info("dedupe removed %d duplicate rows", len(gone))
+    return len(gone)
+
+
+def count_duplicates() -> int:
+    c = db()
+    n = c.execute("SELECT COALESCE(SUM(k - 1), 0) FROM (SELECT COUNT(*) k FROM products GROUP BY shop, slug HAVING k > 1)").fetchone()[0]
+    c.close()
+    return n
+
+
 def parse_detail(html: str, row: dict) -> dict:
     """Facts only the product page has: the real order total (per-metre goods) and the pack size (tiles)."""
     soup = BeautifulSoup(html, "html.parser")
@@ -331,6 +376,10 @@ async def crawl(max_pages: int = 4000, delay: float = 0.6) -> dict:
             en = await enrich(s, shop)
             checks[shop] = en["check"]
             PROGRESS["phase"] = ""
+            try:
+                dedupe()
+            except Exception:
+                log.exception("dedupe failed")
             per_shop[shop] = len(slugs)
             total["products"] += len(slugs)
             total["pages"] += pages
@@ -612,6 +661,9 @@ def health() -> dict:
         prev = None
     age_h = (time.time() - last) / 3600 if last else None
     problems = []
+    dups = count_duplicates()
+    if dups:
+        problems.append(f"в базе {dups} дублей товаров (будут убраны при следующем обходе)")
     if age_h is None or age_h > 30:
         problems.append(f"каталог не обновлялся {'ни разу' if age_h is None else f'{age_h:.0f} ч'}")
     if m_len and m_ok / m_len < 0.8:
